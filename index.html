@@ -2053,6 +2053,7 @@ const DIS_NORM=s=>String(s==null?'':s).toLowerCase().replace(/[“”"*]/g,'').r
 // [DIS label (prefix match, normalized), FDIF key or null, short label used when several DIS rows combine]
 const DIS_MAP=[
   ['contact name','contactName',''],
+  ['county','marketArea',''],['sp county','marketArea',''],
   ['lot size','lotSize',''],['lot sq','lotSize',''],['lot sqft','lotSize',''],['acreage','lotSize',''],['acres','lotSize',''],
   ['property address','address',''],
   ['legal owner of property','legalOwner','Legal owner'],
@@ -2151,6 +2152,7 @@ function disCalcExtras(rows){
   for(const r of rows){
     const b=DIS_NORM(r[1]);
     if(b==='sp sqft'&&r[2]!=null&&r[2]!=='')out.push({label:'SP SQFT',value:disCell(r[2]),key:'sqft'});
+    if(/^(sp )?county$/.test(b)&&r[2]!=null&&r[2]!=='')out.push({label:'SP County',value:disCell(r[2]),key:'marketArea',note:'DIS form'});
     if(/^(sp )?lot size$/.test(b)&&r[2]!=null&&r[2]!=='')out.push({label:'SP Lot Size',value:fmtLotSize(disCell(r[2])),key:'lotSize',note:(r[10]?'DIS form ('+disCell(r[10])+')':'DIS form')});
     if(['zillow','realtor.com','redfin','propstream','propwire'].includes(b)&&r[2]!==''&&r[2]!=null&&!isNaN(+r[2]))out.push({label:r[1].trim()+' estimate',value:'$'+Math.round(+r[2]).toLocaleString(),key:null});
     if(b==='comp'&&DIS_NORM(r[2])==='address')hdr=r.map(DIS_NORM);
@@ -2286,27 +2288,50 @@ async function lookupNCLotSize(address,ownerHint){
   if(f.length!==1)return null;
   const x=f[0];
   const ownerMatch=last&&last.length>2?String(x.ownname||'').toUpperCase().includes(last.toUpperCase()):null;
-  return{value:fmtLotSize(x.gisacres),acres:x.gisacres,parcel:x.parno,county:x.cntyname,siteadd:x.siteadd,ownerMatch,
+  return{value:fmtLotSize(x.gisacres),county:x.cntyname,acres:x.gisacres,parcel:x.parno,county:x.cntyname,siteadd:x.siteadd,ownerMatch,
     note:'NC OneMap parcels: '+x.cntyname+' Co. parcel '+x.parno+' ('+x.siteadd+')'+(ownerMatch===false?' — owner on record differs from contact, check':'')};
 }
 
-// Market / Area from the address: reuse an existing market when it matches the city
-// (or the city's metro), otherwise "City, ST".
-const CLT_METRO=['charlotte','gastonia','concord','huntersville','matthews','mint hill','monroe','indian trail','waxhaw','stallings','cornelius','davidson','mooresville','kannapolis','harrisburg','belmont','mount holly','cramerton','lowell','dallas','cherryville','bessemer city','kings mountain','shelby','lincolnton','denver','statesville','salisbury','albemarle','locust','midland','pineville','fort mill','rock hill','tega cay','lake wylie','clover','york','lancaster','indian land','wingate','marshville','weddington','wesley chapel'];
-function deriveMarket(address,existing){
-  const parts=String(address||'').split(',').map(s=>s.trim()).filter(Boolean);
-  if(parts.length<2)return null;
-  const city=parts[parts.length-2].replace(/\s+/g,' ');
-  const st=((parts[parts.length-1].match(/\b([A-Z]{2})\b/)||[])[1]||'').toUpperCase();
-  if(!city||/\d/.test(city))return null;
-  const cityTitle=city.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());
-  const norm=s=>String(s).toLowerCase().replace(/\b(metro|area|market)\b/g,'').replace(/,\s*[a-z]{2}\s*$/,'').replace(/[^a-z ]/g,' ').replace(/\s+/g,' ').trim();
-  const uniq=[...new Set((existing||[]).map(s=>String(s).trim()).filter(Boolean))];
-  const hit=uniq.find(m=>norm(m)===city.toLowerCase());
-  if(hit)return{value:hit,note:'matches existing market'};
-  const inClt=(st==='NC'||st==='SC')&&CLT_METRO.includes(city.toLowerCase());
-  if(inClt){const m=uniq.find(m=>norm(m)==='charlotte');if(m)return{value:m,note:cityTitle+' is in the Charlotte metro (existing market)'}}
-  return{value:cityTitle+(st?', '+st:''),note:'city from address'+(inClt?' (Charlotte metro)':'')};
+// Market / Area = the property's COUNTY, "Lincoln County, NC". Sources, in order:
+// DIS form County row → NC OneMap parcel (NC) → US Census geocoder (JSONP) → OpenStreetMap Nominatim (CORS).
+const US_ST={'01':'AL','02':'AK','04':'AZ','05':'AR','06':'CA','08':'CO','09':'CT','10':'DE','11':'DC','12':'FL','13':'GA','15':'HI','16':'ID','17':'IL','18':'IN','19':'IA','20':'KS','21':'KY','22':'LA','23':'ME','24':'MD','25':'MA','26':'MI','27':'MN','28':'MS','29':'MO','30':'MT','31':'NE','32':'NV','33':'NH','34':'NJ','35':'NM','36':'NY','37':'NC','38':'ND','39':'OH','40':'OK','41':'OR','42':'PA','44':'RI','45':'SC','46':'SD','47':'TN','48':'TX','49':'UT','50':'VT','51':'VA','53':'WA','54':'WV','55':'WI','56':'WY','72':'PR'};
+const US_STATE_NAMES={alabama:'AL',alaska:'AK',arizona:'AZ',arkansas:'AR',california:'CA',colorado:'CO',connecticut:'CT',delaware:'DE','district of columbia':'DC',florida:'FL',georgia:'GA',hawaii:'HI',idaho:'ID',illinois:'IL',indiana:'IN',iowa:'IA',kansas:'KS',kentucky:'KY',louisiana:'LA',maine:'ME',maryland:'MD',massachusetts:'MA',michigan:'MI',minnesota:'MN',mississippi:'MS',missouri:'MO',montana:'MT',nebraska:'NE',nevada:'NV','new hampshire':'NH','new jersey':'NJ','new mexico':'NM','new york':'NY','north carolina':'NC','north dakota':'ND',ohio:'OH',oklahoma:'OK',oregon:'OR',pennsylvania:'PA','rhode island':'RI','south carolina':'SC','south dakota':'SD',tennessee:'TN',texas:'TX',utah:'UT',vermont:'VT',virginia:'VA',washington:'WA','west virginia':'WV',wisconsin:'WI',wyoming:'WY'};
+function stateFromAddress(a){const m=String(a||'').match(/,\s*([A-Za-z]{2})\.?\s*(\d{5}(-\d{4})?)?\s*$/);return m?m[1].toUpperCase():''}
+// "Lincoln" / "LINCOLN COUNTY" + "NC" -> "Lincoln County, NC" (keeps Parish/Borough/city names that already carry a suffix)
+function fmtCounty(name,st){
+  let n=String(name||'').trim().replace(/\s+/g,' ');if(!n)return'';
+  n=n.toLowerCase().replace(/(^|[\s.'-])([a-z])/g,(m,a,b)=>a+b.toUpperCase()).replace(/\bMc([a-z])/g,(m,b)=>'Mc'+b.toUpperCase());
+  if(!/\b(County|Parish|Borough|Census Area|Municipality|City|Municipio)$/i.test(n))n+=' County';
+  return n+(st?', '+st:'');
+}
+function jsonp(url,timeoutMs=8000){
+  return new Promise((res,rej)=>{
+    const cb='__jp'+Math.random().toString(36).slice(2);const s=document.createElement('script');
+    const t=setTimeout(()=>{cleanup();rej(new Error('timeout'))},timeoutMs);
+    function cleanup(){clearTimeout(t);delete window[cb];s.remove()}
+    window[cb]=d=>{cleanup();res(d)};s.onerror=()=>{cleanup();rej(new Error('jsonp failed'))};
+    s.src=url+(url.includes('?')?'&':'?')+'callback='+cb;document.head.appendChild(s);
+  });
+}
+async function lookupCounty(address){
+  const a=String(address||'').trim();if(!a)return null;
+  try{
+    const d=await jsonp('https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress?benchmark=Public_AR_Current&vintage=Current_Current&layers=Counties&format=jsonp&address='+encodeURIComponent(a));
+    const m=d&&d.result&&d.result.addressMatches&&d.result.addressMatches[0];
+    const c=m&&m.geographies&&m.geographies.Counties&&m.geographies.Counties[0];
+    if(c&&c.NAME){const st=US_ST[c.STATE]||stateFromAddress(a);return{value:fmtCounty(c.NAME,st),note:'US Census geocoder'}}
+  }catch(e){}
+  try{
+    const r=await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&countrycodes=us&limit=1&q='+encodeURIComponent(a),{credentials:'omit'});
+    const j=r.ok?await r.json():[];const ad=j[0]&&j[0].address;
+    if(ad&&ad.county){const st=((ad['ISO3166-2-lvl4']||'').split('-')[1])||US_STATE_NAMES[String(ad.state||'').toLowerCase()]||stateFromAddress(a);
+      return{value:fmtCounty(ad.county,st),note:'OpenStreetMap Nominatim'}}
+  }catch(e){}
+  return null;
+}
+function matchExistingMarket(value,existing){
+  const n=s=>String(s||'').toLowerCase().replace(/[^a-z]/g,'');
+  return (existing||[]).map(s=>String(s||'').trim()).find(m=>m&&n(m)===n(value))||value;
 }
 
 /* ── GOOGLE DRIVE PICKER (DIS form) ───────────────────────────────
@@ -2394,22 +2419,26 @@ function TabFDIF({D}){
       const parsed=await disReadFile(file);
       if(!parsed.items.length&&!parsed.extras.length){alert('No DIS form fields were found in '+file.name+'. Download the intake form from Drive as Microsoft Excel (.xlsx) and try again.');return}
       const prop=disBuildProposal(parsed,D.deal.fdif);
-      {const addr=(prop.fields.find(f=>f.key==='address')||{}).proposed||D.deal.fdif.address;
-       const others=[...(D.deals||[]).filter(d=>d.id!==D.deal.id).map(d=>d.fdif&&d.fdif.marketArea),...Object.keys(D.marketRates||{}).filter(k=>k!=='__default')];
-       const mk=deriveMarket(addr,others);
-       if(mk){const current=String(D.deal.fdif.marketArea||'').trim();
-         prop.fields.push({key:'marketArea',label:'Market / Area',current,proposed:mk.value,keep:!!current&&current!==mk.value,same:current===mk.value,note:mk.note})}}
+      const addr=(prop.fields.find(f=>f.key==='address')||{}).proposed||D.deal.fdif.address;
+      const owner=(prop.fields.find(f=>f.key==='contactName')||{}).proposed||D.deal.fdif.contactName;
+      const others=[...(D.deals||[]).filter(d=>d.id!==D.deal.id).map(d=>d.fdif&&d.fdif.marketArea),...Object.keys(D.marketRates||{}).filter(k=>k!=='__default')];
+      const pushField=(key,label,proposed,note)=>{const current=String(D.deal.fdif[key]||'').trim();
+        prop.fields.push({key,label,current,proposed,keep:!!current&&current!==proposed,same:current===proposed,note})};
+      let parcel=null;try{parcel=await lookupNCLotSize(addr,owner)}catch(err){}
+      // Lot size: form wins; else NC parcel.
       if(!prop.fields.some(f=>f.key==='lotSize')){
-        const addr=(prop.fields.find(f=>f.key==='address')||{}).proposed||D.deal.fdif.address;
-        const owner=(prop.fields.find(f=>f.key==='contactName')||{}).proposed||D.deal.fdif.contactName;
-        try{
-          const lot=await lookupNCLotSize(addr,owner);
-          if(lot){const current=String(D.deal.fdif.lotSize||'').trim();
-            prop.fields.push({key:'lotSize',label:'Size of the Lot?',current,proposed:lot.value,keep:!!current&&current!==lot.value,same:current===lot.value,note:lot.note});
-            prop.lotSource=lot.note}
-          else prop.lotSource='not on DIS form; no single NC parcel match found';
-        }catch(err){prop.lotSource='not on DIS form; parcel lookup unavailable'}
+        if(parcel){pushField('lotSize','Size of the Lot?',parcel.value,parcel.note);prop.lotSource=parcel.note}
+        else prop.lotSource='not on DIS form; no single NC parcel match found';
       }else prop.lotSource='from DIS form';
+      // Market / Area = county. Form County row wins; else NC parcel county; else Census / OSM geocoder.
+      const mf=prop.fields.find(f=>f.key==='marketArea');
+      if(mf){mf.proposed=matchExistingMarket(fmtCounty(mf.proposed,stateFromAddress(addr)),others);mf.same=mf.current===mf.proposed;mf.keep=!!mf.current&&!mf.same;mf.note='DIS form County'}
+      else{
+        let cty=parcel&&parcel.county?{value:fmtCounty(parcel.county,'NC'),note:'NC OneMap parcel record'}:null;
+        if(!cty)cty=await lookupCounty(addr);
+        if(cty){const v=matchExistingMarket(cty.value,others);pushField('marketArea','Market / Area',v,cty.note+(v!==cty.value?' (matched existing market)':''))}
+        prop.marketSource=cty?cty.note:'county not found, left blank';
+      }
       setDisImport({fileName:file.name,...prop});
     }catch(err){alert('Could not read the DIS form: '+err.message)}
   }
@@ -2421,7 +2450,7 @@ function TabFDIF({D}){
       D.updateFDIF(f.key,f.proposed);filled.push(f.label);
     }
     D.updateFDIF('disImportedFrom',disImport.fileName);D.updateFDIF('disImportedAt',new Date().toISOString());
-    setDisSummary({fileName:disImport.fileName,filled,kept,unmatched:disImport.unmatched,lotSource:disImport.lotSource});
+    setDisSummary({fileName:disImport.fileName,filled,kept,unmatched:disImport.unmatched,lotSource:disImport.lotSource,marketSource:disImport.marketSource});
     setDisImport(null);
   }
 
@@ -3050,6 +3079,7 @@ function TabFDIF({D}){
     {disSummary&&<div className="card" style={{position:'fixed',right:20,bottom:20,zIndex:999,maxWidth:460,maxHeight:'60vh',overflow:'auto',background:'#fff',border:'2px solid #2563eb',padding:16,boxShadow:'0 10px 30px rgba(0,0,0,.2)'}} data-testid="dis-summary">
       <div className="f ac jb"><b>DIS form imported</b><button className="btn" onClick={()=>setDisSummary(null)}>✕</button></div>
       <div style={{fontSize:'.78rem',color:'var(--text-sec)',margin:'4px 0 8px'}}>{disSummary.fileName}. Click Save to keep the changes.</div>
+      {disSummary.marketSource&&<div style={{fontSize:'.78rem',marginBottom:4}}><b>Market / Area (county):</b> {disSummary.marketSource}</div>}
       {disSummary.lotSource&&<div style={{fontSize:'.78rem',marginBottom:6}}><b>Lot size:</b> {disSummary.lotSource}</div>}
       <div style={{fontSize:'.8rem'}}><b style={{color:'var(--green)'}}>Filled ({disSummary.filled.length}):</b> {disSummary.filled.join(' · ')||'none'}</div>
       {disSummary.kept.length>0&&<div style={{fontSize:'.8rem',marginTop:6}}><b style={{color:'var(--amber)'}}>Kept your existing value ({disSummary.kept.length}):</b> {disSummary.kept.join(' · ')}</div>}
