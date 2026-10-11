@@ -3206,6 +3206,17 @@ function TabQuickOffer({D}){
     [asIsARV,estReno,avgAVM,qoHold,activeUW]);
   // ── Strategy headline: each option re-uses an existing engine (calcUW / calcIA / calcAsIsListing) ──
   const strat=qo.strategy||'Cash Offer | Flip';
+  // Per-deal pricing targets. Stored in uwDefaults so the Underwriting tab uses the same numbers.
+  const tgtProfit=activeUW.minProfitTarget||0, tgtROI=activeUW.minAnnualROI||0;
+  const bindTxt=b=>b==='roi'?'limited by '+tgtROI+'% annualised ROI':b==='profit'?'limited by '+fmt(tgtProfit)+' profit target':'no price clears both floors';
+  const ProfitInput=({w})=><input className="inp mono" data-testid="qo-target-profit" type="number" step="1000" min="0" style={{width:w||140,fontSize:'1.05rem',fontWeight:700}}
+    defaultValue={tgtProfit} key={'tp'+tgtProfit} onBlur={e=>{const v=Math.max(0,Math.round(pn(e.target.value)));if(v!==tgtProfit)D.updateUWD('minProfitTarget',v)}}
+    onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}/>;
+  const ROIInput=()=><input className="inp mono" data-testid="qo-target-roi" type="number" step="1" min="0" style={{width:70}}
+    defaultValue={tgtROI} key={'tr'+tgtROI} onBlur={e=>{const v=Math.max(0,pn(e.target.value));if(v!==tgtROI)D.updateUWD('minAnnualROI',v)}}
+    onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}/>;
+  const BindBadge=({b})=><span data-testid="qo-binding" style={{display:'inline-block',padding:'2px 8px',borderRadius:10,fontSize:'.72rem',fontWeight:600,
+    background:b==='roi'?'#FFF4E0':b==='profit'?'var(--green-bg)':'#FDE8E8',color:b==='roi'?'#9E6B00':b==='profit'?'var(--green)':'var(--red)'}}>MAO {bindTxt(b)}</span>;
   const assignFee=pn(qo.assignFee)||15000;
   const stratRes=useMemo(()=>{
     if(!offers)return null;
@@ -3217,7 +3228,7 @@ function TabQuickOffer({D}){
     const lh=(D.deal.underwriting&&D.deal.underwriting.holdAsIs)??0;
     const lProbe=asIsARV?calcUW({purchasePrice:Math.max(1,Math.round(asIsARV*0.5)),arv:asIsARV,sqft,holdMonths:lh,renoSubtotal:0,uw:activeUW,downPayment:0,hoaMonthly:0}):null;
     const lMao=lProbe?Math.max(0,lProbe.mao):0;
-    const list={mao:lMao,hold:lh,res:uwAt(lMao,{arv:asIsARV,hold:lh,reno:0})};
+    const list={mao:lMao,hold:lh,binding:lProbe?lProbe.maoBinding:'none',res:uwAt(lMao,{arv:asIsARV,hold:lh,reno:0})};
     // Listing (seller side) = As-Is Listing: our 3% commission; seller nets as-is less selling costs
     const listing={price:asIsARV,ail:calcAsIsListing(asIsARV),netToSeller:offers.netToSeller,vsCash:offers.netToSeller-mao};
     // Creative = Installment exit (calcIA) with the deal's IA settings and FDIF mortgage
@@ -3392,10 +3403,16 @@ function TabQuickOffer({D}){
     {offers&&stratRes&&<div className="card mb4" data-testid="strategy-headline" style={{border:'2px solid var(--accent)'}}>
       <div className="card-h"><span>Strategy: <b>{strat}</b></span><span className="tmut" style={{fontSize:'.72rem'}}>headline numbers for the selected strategy · other figures below are secondary</span></div>
       <div className="card-b">
+        <div className="f ac" style={{gap:12,flexWrap:'wrap',fontSize:'.8rem',marginBottom:12,padding:'8px 12px',background:'var(--bg)',borderRadius:'var(--r-sm)'}}>
+          <span><b>Pricing targets</b> (this deal; also used on Underwriting):</span>
+          {!['Cash Offer | Flip','Cash Offer | List'].includes(strat)&&<span className="f ac" style={{gap:6}}>Target profit $<ProfitInput w={120}/></span>}
+          <span className="f ac" style={{gap:6}}>Min annualised ROI <ROIInput/>%</span>
+          <BindBadge b={strat==='Cash Offer | List'?stratRes.list.binding:offers.maoBinding}/>
+        </div>
         {strat==='Cash Offer | Assignment'&&<>
           <div className="mr">
             <div className="mc hl"><div className="lbl">Our Purchase Price (contract)</div><div className="val mono">{fmt(stratRes.assign.price)}</div><div className="sub">MAO − {fmt(stratRes.assign.fee)} assignment fee</div></div>
-            <div className="mc"><div className="lbl">Investor Buyer's Price (MAO)</div><div className="val mono">{fmt(stratRes.assign.investorPrice)}</div><div className="sub">clears {fmt(offers.minProfitTarget)} profit for the buyer</div></div>
+            <div className="mc"><div className="lbl">Investor Buyer's Price (MAO)</div><div className="val mono">{fmt(stratRes.assign.investorPrice)}</div><div className="sub">{bindTxt(offers.maoBinding)}</div></div>
             <div className="mc"><div className="lbl">Our Assignment Profit</div><div className="val mono" style={{color:'var(--green)'}}>{fmt(stratRes.assign.fee)}</div></div>
           </div>
           <div className="f ac" style={{gap:8,flexWrap:'wrap',fontSize:'.8rem'}}>Assignment fee:
@@ -3403,15 +3420,15 @@ function TabQuickOffer({D}){
             <input className="inp inp-m mono" type="number" style={{width:110}} value={qo.assignFee||''} placeholder="15000" onChange={e=>D.updateQO('assignFee',e.target.value)}/>
           </div>
         </>}
-        {strat==='Cash Offer | Flip'&&stratRes.flip&&<div className="mr">
-          <div className="mc hl"><div className="lbl">Full Rehab MAO (Cash Offer)</div><div className="val mono">{fmt(offers.cashOffer)}</div><div className="sub">ARV {fmt(offers.arvUsed)} · reno {fmt(stratRes.flip.totalReno)} incl. contingency</div></div>
-          <div className="mc"><div className="lbl">Projected Profit</div><div className="val mono" style={{color:'var(--green)'}}>{fmt(stratRes.flip.netProfit)}</div></div>
-          <div className="mc"><div className="lbl">ROI (all-in)</div><div className="val mono">{fmtPct(stratRes.flip.allCostROI)}</div><div className="sub">{fmtPct(qoHold>0?stratRes.flip.allCostROI*12/qoHold:stratRes.flip.allCostROI)} annualised</div></div>
+        {strat==='Cash Offer | Flip'&&<div className="mr">
+          <div className="mc hl"><div className="lbl">Full Rehab MAO (Cash Offer)</div><div className="val mono">{fmt(offers.cashOffer)}</div><div className="sub">ARV {fmt(offers.arvUsed)} · reno {fmt((stratRes.flip||{}).totalReno)} incl. contingency</div></div>
+          <div className="mc"><div className="lbl">Projected Profit (target, editable)</div><div className="f ac" style={{gap:4}}>$<ProfitInput/></div><div className="sub">at MAO: <b>{fmt((stratRes.flip||{}).netProfit)}</b>{offers.maoBinding==='roi'?' (ROI floor needs more)':''}</div></div>
+          <div className="mc"><div className="lbl">ROI (all-in)</div><div className="val mono">{fmtPct((stratRes.flip||{}).allCostROI)}</div><div className="sub">{fmtPct(stratRes.flip?(qoHold>0?stratRes.flip.allCostROI*12/qoHold:stratRes.flip.allCostROI):null)} annualised</div></div>
           <div className="mc"><div className="lbl">Hold</div><div className="val mono">{qoHold} mo</div></div>
         </div>}
         {strat==='Cash Offer | List'&&<div className="mr">
           <div className="mc hl"><div className="lbl">Cash Offer (buy, then list as-is)</div><div className="val mono">{fmt(stratRes.list.mao)}</div><div className="sub">Underwriting Listing exit: as-is {fmt(asIsARV)}, no reno, {stratRes.list.hold} mo hold</div></div>
-          <div className="mc"><div className="lbl">Projected Profit</div><div className="val mono" style={{color:'var(--green)'}}>{fmt(stratRes.list.res&&stratRes.list.res.netProfit)}</div></div>
+          <div className="mc"><div className="lbl">Projected Profit (target, editable)</div><div className="f ac" style={{gap:4}}>$<ProfitInput/></div><div className="sub">at MAO: <b>{fmt(stratRes.list.res&&stratRes.list.res.netProfit)}</b>{stratRes.list.binding==='roi'?' (ROI floor needs more)':''}</div></div>
           <div className="mc"><div className="lbl">ROI (all-in)</div><div className="val mono">{fmtPct(stratRes.list.res&&stratRes.list.res.allCostROI)}</div></div>
           <div className="mc"><div className="lbl">Selling Costs</div><div className="val mono">{fmt(stratRes.list.res&&stratRes.list.res.totalSellingCost)}</div></div>
         </div>}
@@ -3435,7 +3452,7 @@ function TabQuickOffer({D}){
       <div className="mr">
         <div className="mc hl"><div className="lbl">As-Is Value</div><div className="val">{fmt(asIsARV)}</div><div className="sub">Based on {comps.asIs.filter(c=>c.price).length>0?'comps':avmVals.length>0?'avg of '+avmVals.length+' AVM'+(avmVals.length>1?'s':''):'no data'}</div></div>
         {offers&&<><div className="mc"><div className="lbl">Net to Seller ({(offers.sellPct*100).toFixed(1).replace(/\.0$/,'')}% fees)</div><div className="val mono">{fmt(offers.netToSeller)}</div></div>
-        <div className="mc"><div className="lbl">Cash Offer</div><div className="val mono">{fmt(offers.cashOffer)}</div><div className="sub">MAO at {fmt(offers.minProfitTarget)} profit</div></div></>}
+        <div className="mc"><div className="lbl">Cash Offer</div><div className="val mono">{fmt(offers.cashOffer)}</div><div className="sub">MAO {bindTxt(offers.maoBinding)}</div></div></>}
       </div>
       {/* ===== RENO ESTIMATE FOR CASH OFFER ===== */}
       <div style={{marginBottom:16}}>
@@ -4214,7 +4231,7 @@ function UWRow({label,vals,bold,highlight}){
 
 /* Underwriting assumption fields, shared by the deal-level editor and the
    investor profile editor so the two can never drift apart. */
-const UW_FIELDS=[['closingCostBuy','Buy Closing %',0.1],['propTaxRate','Property Tax Rate %',0.1],['insuranceAnnual','Insurance $/yr',100],['utilitiesMonthly','Utilities $/mo',50],['contingencyPct','Contingency %',1],['loanPoints','Loan Points %',0.5],['ltc','LTC %',1],['ltv','LTV %',1],['interestRate','Interest Rate %',0.1],['lenderFees','Lender Fees $',100],['listingCommPct','Listing Agent %',0.5],['buyerCommPct','Buyer Agent %',0.5],['titleEscrowPct','Title/Escrow %',0.5],['minProfitTarget','Min Profit Target $',5000],['targetProfit','Target Profit $',5000],['minROI','Min ROI %',1],['targetROI','Target ROI %',1]];
+const UW_FIELDS=[['closingCostBuy','Buy Closing %',0.1],['propTaxRate','Property Tax Rate %',0.1],['insuranceAnnual','Insurance $/yr',100],['utilitiesMonthly','Utilities $/mo',50],['contingencyPct','Contingency %',1],['loanPoints','Loan Points %',0.5],['ltc','LTC %',1],['ltv','LTV %',1],['interestRate','Interest Rate %',0.1],['lenderFees','Lender Fees $',100],['listingCommPct','Listing Agent %',0.5],['buyerCommPct','Buyer Agent %',0.5],['titleEscrowPct','Title/Escrow %',0.5],['minProfitTarget','Min Profit Target $ (MAO floor, shared with Quick Offer)',5000],['minAnnualROI','Min Annualised ROI % (MAO floor, shared with Quick Offer)',1],['targetProfit','Target Profit $',5000],['minROI','Min ROI %',1],['targetROI','Target ROI %',1]];
 
 /* Investor capital profiles are read from the DFYA Buy Box table in Airtable,
    which the onboarding questionnaire already populates. The app does not keep
