@@ -120,6 +120,12 @@ select.inp{appearance:auto;cursor:pointer}
 
 details summary{cursor:pointer;list-style:none}
 details summary::-webkit-details-marker{display:none}
+.fdif-actions{display:flex;align-items:flex-start;gap:12px;margin-right:24px;flex-wrap:wrap;justify-content:flex-end}
+.fdif-act{display:flex;flex-direction:column;align-items:center;width:216px}
+.fdif-btn{width:100%;height:50px;padding:0 14px;border-radius:var(--r);font-weight:700;font-size:.9rem;white-space:nowrap;display:flex;align-items:center;justify-content:center;gap:6px;font-family:inherit}
+.fdif-cap{font-size:.68rem;line-height:1.2;color:var(--text-sec);margin-top:5px;text-align:center;min-height:1.2em;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:1100px){.fdif-act{width:190px}.fdif-btn{font-size:.82rem}}
+@media (max-width:760px){.fdif-actions{width:100%;margin:10px 0 0;justify-content:stretch}.fdif-act{flex:1 1 180px;width:auto}}
 </style>
 </head>
 <body>
@@ -2539,43 +2545,44 @@ function TabFDIF({D}){
         <h2 style={{fontSize:'1.15rem',fontWeight:700}}>Funding Department Intake Form (FDIF)</h2>
         <div style={{fontSize:'.78rem',color:'var(--text-sec)',marginTop:2}}>DIS fills this out during the first call with the seller</div>
       </div>
-      {/* DIS lead form import (client-side; Fetch button below is unchanged). */}
-      <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',marginRight:16}}>
+      {/* Action row: DIS upload · Drive pick · HouseCanary fetch. Same height/width, captions on one baseline. */}
+      <div className="fdif-actions">
         <input ref={disInputRef} type="file" accept=".xlsx,.xls,.ods,.csv,.pdf,.txt,.md" style={{display:'none'}} onChange={onDisFile}/>
-        <button type="button" onClick={()=>disInputRef.current&&disInputRef.current.click()}
-          style={{padding:'14px 20px',borderRadius:'var(--r)',fontWeight:700,fontSize:'.95rem',cursor:'pointer',color:'#fff',background:'#2563eb',border:'2px solid #2563eb',boxShadow:'var(--shadow)',whiteSpace:'nowrap'}}
-          title="Fill this FDIF from the GHPA DIS intake form (download it from Drive as .xlsx, .csv, .pdf or .txt)">
-          📄 Upload DIS Lead Form
-        </button>
-        <button type="button" onClick={onDriveClick} disabled={gdBusy} data-testid="dis-drive"
-          style={{marginTop:6,padding:'6px 12px',borderRadius:'var(--r)',fontWeight:600,fontSize:'.78rem',cursor:gdBusy?'wait':'pointer',color:'#2563eb',background:'#fff',border:'1px solid #2563eb',whiteSpace:'nowrap'}}
-          title="Pick the DIS intake Sheet straight from Google Drive">{gdBusy?'⏳ Opening Drive…':'☁️ Pick from Google Drive'}</button>
-        <div style={{fontSize:'.68rem',color:'var(--text-sec)',marginTop:4,textAlign:'center',maxWidth:190}}>{fdif.disImportedFrom?'Last: '+fdif.disImportedFrom:'.xlsx (best), .csv, .pdf, .txt'}</div>
-      </div>
-      {/* HC autofill button — large, red until used, green after success. */}
-      <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',marginRight:24}}>
-        <button
-          type="button"
-          onClick={()=>fetchHC()}
-          disabled={hcFetching||!hasAddr}
-          style={{
-            padding:'14px 24px',
-            borderRadius:'var(--r)',
-            fontWeight:700,
-            fontSize:'.95rem',
-            cursor:hcFetching?'wait':(hasAddr?'pointer':'not-allowed'),
-            color:hasAddr?'#fff':'var(--text-sec)',
-            background:!hasAddr?'var(--bg-alt,#eef1f5)':(fdif.hcFetched?'var(--green)':'var(--red)'),
-            border:'2px solid '+(!hasAddr?'var(--border)':(fdif.hcFetched?'var(--green)':'var(--red)')),
-            boxShadow:hasAddr?'var(--shadow)':'none',
-            transition:'all .15s',
-            opacity:hcFetching?0.7:1,
-            whiteSpace:'nowrap',
-          }}
-          title={!hasAddr?'Enter the Property Address first (Seller & Property Info, above)':(fdif.hcFetched?'Refetch property data from HouseCanary':'Auto-fill property data from HouseCanary')}>
-          {hcFetching?'⏳ Fetching…':(!hasAddr?'⚡ Fetch Property Data':(fdif.hcFetched?'✓ Property Data Loaded':'⚡ Fetch Property Data'))}
-        </button>
-        {!hasAddr&&<div style={{fontSize:'.68rem',color:'var(--text-sec)',marginTop:4,textAlign:'center',maxWidth:180}}>Enter Property Address to enable</div>}
+        <div className="fdif-act">
+          <button type="button" className="fdif-btn" onClick={()=>disInputRef.current&&disInputRef.current.click()}
+            style={{color:'#fff',background:'#2563eb',border:'2px solid #2563eb',boxShadow:'var(--shadow)',cursor:'pointer'}}
+            title="Fill this FDIF from the GHPA DIS intake form (download it from Drive as .xlsx, .csv, .pdf or .txt)">
+            📄 Upload DIS Lead Form
+          </button>
+          <div className="fdif-cap">{fdif.disImportedFrom?'Last: '+fdif.disImportedFrom:'.xlsx (best), .csv, .pdf, .txt'}</div>
+        </div>
+        <div className="fdif-act">
+          <button type="button" className="fdif-btn" onClick={onDriveClick} disabled={gdBusy} data-testid="dis-drive"
+            style={{color:'#2563eb',background:'#fff',border:'2px solid #2563eb',cursor:gdBusy?'wait':'pointer'}}
+            title="Pick the DIS intake Sheet straight from Google Drive">{gdBusy?'⏳ Opening Drive…':'☁️ Pick from Google Drive'}</button>
+          <div className="fdif-cap">Opens Intake Lead Folders</div>
+        </div>
+        {/* HC autofill button — large, red until used, green after success. */}
+        <div className="fdif-act">
+          <button
+            type="button"
+            className="fdif-btn"
+            onClick={()=>fetchHC()}
+            disabled={hcFetching||!hasAddr}
+            style={{
+              cursor:hcFetching?'wait':(hasAddr?'pointer':'not-allowed'),
+              color:hasAddr?'#fff':'var(--text-sec)',
+              background:!hasAddr?'var(--bg-alt,#eef1f5)':(fdif.hcFetched?'var(--green)':'var(--red)'),
+              border:'2px solid '+(!hasAddr?'var(--border)':(fdif.hcFetched?'var(--green)':'var(--red)')),
+              boxShadow:hasAddr?'var(--shadow)':'none',
+              transition:'all .15s',
+              opacity:hcFetching?0.7:1,
+            }}
+            title={!hasAddr?'Enter the Property Address first (Seller & Property Info, above)':(fdif.hcFetched?'Refetch property data from HouseCanary':'Auto-fill property data from HouseCanary')}>
+            {hcFetching?'⏳ Fetching…':(!hasAddr?'⚡ Fetch Property Data':(fdif.hcFetched?'✓ Property Data Loaded':'⚡ Fetch Property Data'))}
+          </button>
+          <div className="fdif-cap">{!hasAddr?'Enter Property Address to enable':'\u00a0'}</div>
+        </div>
       </div>
       <div>
         <div style={{textAlign:'right'}}>
