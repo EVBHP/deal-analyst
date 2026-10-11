@@ -3204,6 +3204,34 @@ function TabQuickOffer({D}){
   const qoHold=pn(qo.holdMonths)||6;
   const offers=useMemo(()=>calcQuickOffers(asIsARV,estReno,{arv:avgAVM||asIsARV,uw:activeUW,holdMonths:qoHold}),
     [asIsARV,estReno,avgAVM,qoHold,activeUW]);
+  // ── Strategy headline: each option re-uses an existing engine (calcUW / calcIA / calcAsIsListing) ──
+  const strat=qo.strategy||'Cash Offer | Flip';
+  const assignFee=pn(qo.assignFee)||15000;
+  const stratRes=useMemo(()=>{
+    if(!offers)return null;
+    const arv=offers.arvUsed,mao=offers.cashOffer;
+    const uwAt=(pp,o)=>pp>0?calcUW({purchasePrice:pp,arv:o.arv,sqft,holdMonths:o.hold,renoSubtotal:o.reno,uw:activeUW,downPayment:0,hoaMonthly:0}):null;
+    // Flip = Full Rehab exit at the Quick Offer MAO
+    const flip=uwAt(mao,{arv,hold:qoHold,reno:estReno});
+    // Cash | List = Underwriting "Listing" exit: as-is value, no reno, As-Is hold
+    const lh=(D.deal.underwriting&&D.deal.underwriting.holdAsIs)??0;
+    const lProbe=asIsARV?calcUW({purchasePrice:Math.max(1,Math.round(asIsARV*0.5)),arv:asIsARV,sqft,holdMonths:lh,renoSubtotal:0,uw:activeUW,downPayment:0,hoaMonthly:0}):null;
+    const lMao=lProbe?Math.max(0,lProbe.mao):0;
+    const list={mao:lMao,hold:lh,res:uwAt(lMao,{arv:asIsARV,hold:lh,reno:0})};
+    // Listing (seller side) = As-Is Listing: our 3% commission; seller nets as-is less selling costs
+    const listing={price:asIsARV,ail:calcAsIsListing(asIsARV),netToSeller:offers.netToSeller,vsCash:offers.netToSeller-mao};
+    // Creative = Installment exit (calcIA) with the deal's IA settings and FDIF mortgage
+    const ia=D.deal.ia||{},iaDef=D.deal.iaDefaults||{};
+    const iau={...DEF_IA,...iaDef,minProfitTarget:iaDef.minProfitTarget||75000,targetProfit:iaDef.targetProfit||100000};
+    const iaPP=pn(ia.purchasePrice)||pn(D.deal.underwriting&&D.deal.underwriting.purchasePrice)||mao;
+    const iaHold=ia.holdMonths||6;
+    const bal=pn(ia.takeoverBalance)||pn(fdif.mortgageBalance),pmt=pn(ia.takeoverPayment)||pn(fdif.mortgagePayment);
+    const creative={pp:iaPP,ppSource:pn(ia.purchasePrice)?'Underwriting installment price':pn(D.deal.underwriting&&D.deal.underwriting.purchasePrice)?'Underwriting purchase price':'Quick Offer MAO',hold:iaHold,
+      res:iaPP&&arv?calcIA({purchasePrice:iaPP,arv,sqft,holdMonths:iaHold,renoSubtotal:estReno,contingencyPct:iau.contingencyPct,ia:iau,hoaMonthly:pn(fdif.hoaDues)||0,
+        takeover:{on:!!ia.takeover,balance:bal,payment:pmt,escrowed:ia.takeoverEscrowed!==false}}):null};
+    const assign={fee:assignFee,price:Math.max(0,mao-assignFee),investorPrice:mao};
+    return{flip,list,listing,creative,assign};
+  },[offers,asIsARV,estReno,qoHold,activeUW,sqft,D.deal.underwriting,D.deal.ia,D.deal.iaDefaults,fdif.mortgageBalance,fdif.mortgagePayment,fdif.hoaDues,assignFee]);
 
   // Build quick-link URLs from address
   const addr=fdif.address?fdif.address.trim():'';
@@ -3360,11 +3388,53 @@ function TabQuickOffer({D}){
       </div></div>
     </div>
 
+    {/* Strategy headline */}
+    {offers&&stratRes&&<div className="card mb4" data-testid="strategy-headline" style={{border:'2px solid var(--accent)'}}>
+      <div className="card-h"><span>Strategy: <b>{strat}</b></span><span className="tmut" style={{fontSize:'.72rem'}}>headline numbers for the selected strategy · other figures below are secondary</span></div>
+      <div className="card-b">
+        {strat==='Cash Offer | Assignment'&&<>
+          <div className="mr">
+            <div className="mc hl"><div className="lbl">Our Purchase Price (contract)</div><div className="val mono">{fmt(stratRes.assign.price)}</div><div className="sub">MAO − {fmt(stratRes.assign.fee)} assignment fee</div></div>
+            <div className="mc"><div className="lbl">Investor Buyer's Price (MAO)</div><div className="val mono">{fmt(stratRes.assign.investorPrice)}</div><div className="sub">clears {fmt(offers.minProfitTarget)} profit for the buyer</div></div>
+            <div className="mc"><div className="lbl">Our Assignment Profit</div><div className="val mono" style={{color:'var(--green)'}}>{fmt(stratRes.assign.fee)}</div></div>
+          </div>
+          <div className="f ac" style={{gap:8,flexWrap:'wrap',fontSize:'.8rem'}}>Assignment fee:
+            {offers.wholesale.map(w=><button key={w.fee} className="btn" onClick={()=>D.updateQO('assignFee',w.fee)} style={assignFee===w.fee?{background:'var(--accent)',color:'#fff',borderColor:'var(--accent)'}:{}}>{fmt(w.fee)} → {fmt(w.price)}</button>)}
+            <input className="inp inp-m mono" type="number" style={{width:110}} value={qo.assignFee||''} placeholder="15000" onChange={e=>D.updateQO('assignFee',e.target.value)}/>
+          </div>
+        </>}
+        {strat==='Cash Offer | Flip'&&stratRes.flip&&<div className="mr">
+          <div className="mc hl"><div className="lbl">Full Rehab MAO (Cash Offer)</div><div className="val mono">{fmt(offers.cashOffer)}</div><div className="sub">ARV {fmt(offers.arvUsed)} · reno {fmt(stratRes.flip.totalReno)} incl. contingency</div></div>
+          <div className="mc"><div className="lbl">Projected Profit</div><div className="val mono" style={{color:'var(--green)'}}>{fmt(stratRes.flip.netProfit)}</div></div>
+          <div className="mc"><div className="lbl">ROI (all-in)</div><div className="val mono">{fmtPct(stratRes.flip.allCostROI)}</div><div className="sub">{fmtPct(qoHold>0?stratRes.flip.allCostROI*12/qoHold:stratRes.flip.allCostROI)} annualised</div></div>
+          <div className="mc"><div className="lbl">Hold</div><div className="val mono">{qoHold} mo</div></div>
+        </div>}
+        {strat==='Cash Offer | List'&&<div className="mr">
+          <div className="mc hl"><div className="lbl">Cash Offer (buy, then list as-is)</div><div className="val mono">{fmt(stratRes.list.mao)}</div><div className="sub">Underwriting Listing exit: as-is {fmt(asIsARV)}, no reno, {stratRes.list.hold} mo hold</div></div>
+          <div className="mc"><div className="lbl">Projected Profit</div><div className="val mono" style={{color:'var(--green)'}}>{fmt(stratRes.list.res&&stratRes.list.res.netProfit)}</div></div>
+          <div className="mc"><div className="lbl">ROI (all-in)</div><div className="val mono">{fmtPct(stratRes.list.res&&stratRes.list.res.allCostROI)}</div></div>
+          <div className="mc"><div className="lbl">Selling Costs</div><div className="val mono">{fmt(stratRes.list.res&&stratRes.list.res.totalSellingCost)}</div></div>
+        </div>}
+        {strat==='Listing'&&<div className="mr">
+          <div className="mc hl"><div className="lbl">Expected List / Sale Price</div><div className="val mono">{fmt(stratRes.listing.price)}</div><div className="sub">as-is value</div></div>
+          <div className="mc"><div className="lbl">Our Commission (3%)</div><div className="val mono" style={{color:'var(--green)'}}>{fmt(stratRes.listing.ail&&stratRes.listing.ail.commission)}</div></div>
+          <div className="mc"><div className="lbl">Net to Seller (listing)</div><div className="val mono">{fmt(stratRes.listing.netToSeller)}</div><div className="sub">after {(offers.sellPct*100).toFixed(1).replace(/\.0$/,'')}% selling costs</div></div>
+          <div className="mc"><div className="lbl">vs Our Cash Offer</div><div className="val mono">{(stratRes.listing.vsCash>=0?'+':'')+fmt(stratRes.listing.vsCash)}</div><div className="sub">listing net − cash offer {fmt(offers.cashOffer)}</div></div>
+        </div>}
+        {strat==='Creative'&&(stratRes.creative.res?<div className="mr">
+          <div className="mc hl"><div className="lbl">Installment Purchase Price</div><div className="val mono">{fmt(stratRes.creative.pp)}</div><div className="sub">{stratRes.creative.ppSource}{stratRes.creative.res.isTakeover?' · subject-to takeover':' · seller-carried note'}</div></div>
+          <div className="mc"><div className="lbl">Projected Profit</div><div className="val mono" style={{color:'var(--green)'}}>{fmt(stratRes.creative.res.netProfit)}</div></div>
+          <div className="mc"><div className="lbl">ROI (all-in)</div><div className="val mono">{fmtPct(stratRes.creative.res.allCostROI)}</div><div className="sub">{stratRes.creative.hold} mo hold</div></div>
+          <div className="mc"><div className="lbl">Cash at Closing</div><div className="val mono">{fmt(stratRes.creative.res.cashAtClosing)}</div>{stratRes.creative.res.isTakeover&&<div className="sub">pmt {fmt(stratRes.creative.res.monthlyPayment)}/mo · equity to seller {fmt(stratRes.creative.res.equityToSeller)}</div>}</div>
+        </div>:<div className="tmut">Enter an AVM to price the installment exit.</div>)}
+      </div>
+    </div>}
+
     {/* Offer Calculations */}
     <div className="card mb4"><div className="card-h">Offer Calculations</div><div className="card-b">
       <div className="mr">
         <div className="mc hl"><div className="lbl">As-Is Value</div><div className="val">{fmt(asIsARV)}</div><div className="sub">Based on {comps.asIs.filter(c=>c.price).length>0?'comps':avmVals.length>0?'avg of '+avmVals.length+' AVM'+(avmVals.length>1?'s':''):'no data'}</div></div>
-        {offers&&<><div className="mc"><div className="lbl">Net to Seller (8% fees)</div><div className="val mono">{fmt(offers.netToSeller)}</div></div>
+        {offers&&<><div className="mc"><div className="lbl">Net to Seller ({(offers.sellPct*100).toFixed(1).replace(/\.0$/,'')}% fees)</div><div className="val mono">{fmt(offers.netToSeller)}</div></div>
         <div className="mc"><div className="lbl">Cash Offer</div><div className="val mono">{fmt(offers.cashOffer)}</div><div className="sub">MAO at {fmt(offers.minProfitTarget)} profit</div></div></>}
       </div>
       {/* ===== RENO ESTIMATE FOR CASH OFFER ===== */}
