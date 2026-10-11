@@ -2154,7 +2154,10 @@ function disCalcExtras(rows){
     if(b==='sp sqft'&&r[2]!=null&&r[2]!=='')out.push({label:'SP SQFT',value:disCell(r[2]),key:'sqft'});
     if(/^(sp )?county$/.test(b)&&r[2]!=null&&r[2]!=='')out.push({label:'SP County',value:disCell(r[2]),key:'marketArea',note:'DIS form'});
     if(/^(sp )?lot size$/.test(b)&&r[2]!=null&&r[2]!=='')out.push({label:'SP Lot Size',value:fmtLotSize(disCell(r[2])),key:'lotSize',note:(r[10]?'DIS form ('+disCell(r[10])+')':'DIS form')});
-    if(['zillow','realtor.com','redfin','propstream','propwire'].includes(b)&&r[2]!==''&&r[2]!=null&&!isNaN(+r[2]))out.push({label:r[1].trim()+' estimate',value:'$'+Math.round(+r[2]).toLocaleString(),key:null});
+    {const AVM={zillow:'qo:zillowAVM','realtor.com':'qo:realtorAVM',redfin:'qo:redfinAVM','house canary':'qo:houseCanaryAVM',housecanary:'qo:houseCanaryAVM','cma':'qo:cmaAVM','cma (mls)':'qo:cmaAVM',propstream:null,propwire:null};
+     if(b in AVM&&r[2]!==''&&r[2]!=null&&!isNaN(+r[2])&&+r[2]>0){const rowNo=rows.indexOf(r)+1;
+       out.push(AVM[b]?{label:r[1].trim()+' AVM',value:String(Math.round(+r[2])),key:AVM[b],note:'DIS form Calc. 2.5 C'+rowNo}
+                      :{label:r[1].trim()+' estimate',value:'$'+Math.round(+r[2]).toLocaleString(),key:null})}}
     if(b==='comp'&&DIS_NORM(r[2])==='address')hdr=r.map(DIS_NORM);
     if(hdr&&b==='sp'){
       const g=n=>{const i=hdr.indexOf(n);return i<0?'':disCell(r[i])};
@@ -2188,7 +2191,7 @@ function disTextToRows(text){
 
 async function disReadFile(file){
   const name=file.name.toLowerCase();
-  let fdifRows=[],calcRows=[],zillowUrl='';
+  let fdifRows=[],calcRows=[];const links={};
   if(/\.(xlsx|xls|ods)$/.test(name)){
     const wb=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:true});
     const fName=wb.SheetNames.find(n=>/fdif/i.test(n))||wb.SheetNames[0];
@@ -2196,11 +2199,12 @@ async function disReadFile(file){
     const cName=wb.SheetNames.find(n=>/calc/i.test(n));
     if(cName)calcRows=XLSX.utils.sheet_to_json(wb.Sheets[cName],{header:1,defval:'',raw:true});
     if(cName){const cs=wb.Sheets[cName],rng=XLSX.utils.decode_range(cs['!ref']||'A1');
+      const SRC={zillow:['zillowUrl',/https?:\/\/(www\.)?zillow\.com\/[^\s)"]+/i],'realtor.com':['realtorUrl',/https?:\/\/(www\.)?realtor\.com\/[^\s)"]+/i],redfin:['redfinUrl',/https?:\/\/(www\.)?redfin\.com\/[^\s)"]+/i]};
       for(let R=rng.s.r;R<=Math.min(rng.e.r,60);R++){const lab=cs[XLSX.utils.encode_cell({r:R,c:1})];
-        if(lab&&/^zillow$/i.test(String(lab.v).trim())){const L=cs[XLSX.utils.encode_cell({r:R,c:11})];
-          const url=(L&&L.l&&L.l.Target)||(L&&/^https?:\/\//.test(String(L.v))?String(L.v):'');
-          const m=url&&String(url).match(/https?:\/\/(www\.)?zillow\.com\/[^\s)"]+/i);
-          if(m)zillowUrl=m[0];break}}}
+        const sk=lab&&String(lab.v).trim().toLowerCase();if(!SRC[sk]||links[SRC[sk][0]])continue;
+        const L=cs[XLSX.utils.encode_cell({r:R,c:11})];
+        const cand=[(L&&L.l&&L.l.Target)||'',L?String(L.v):''];
+        for(const u of cand){const m=u&&u.match(SRC[sk][1]);if(m){links[SRC[sk][0]]={url:m[0],cell:'L'+(R+1)};break}}}}
   }else if(/\.csv$/.test(name)){
     const wb=XLSX.read(await file.text(),{type:'string',raw:true});
     fdifRows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''});
@@ -2215,12 +2219,12 @@ async function disReadFile(file){
   }else if(/\.(txt|md|text)$/.test(name)){
     fdifRows=disTextToRows((await file.text()).replace(/\|/g,'  '));
   }else throw new Error('Unsupported file type. Use the DIS form downloaded from Drive as .xlsx (best), .csv, .pdf, .txt or .md.');
-  const extras=disCalcExtras(calcRows);if(zillowUrl)extras.push({label:'Zillow link (L19)',value:zillowUrl,key:'zillowUrl',note:'DIS form Calc. 2.5 L19 hyperlink'});
+  const extras=disCalcExtras(calcRows);for(const[k,v]of Object.entries(links))extras.push({label:k,value:v.url,key:k,note:'DIS form Calc. 2.5 '+v.cell+' link'});
   return{items:disRowsToItems(fdifRows),extras};
 }
 
 // Build proposed FDIF values + list of unmatched DIS items.
-function disBuildProposal({items,extras},fdif){
+function disBuildProposal({items,extras},fdif,qo={}){
   const acc={},unmatched=[],matched=[];
   const add=(key,lbl,text,src)=>{(acc[key]=acc[key]||[]).push({lbl,text});matched.push({src,key})};
   let beds='',baths='';
@@ -2251,9 +2255,11 @@ function disBuildProposal({items,extras},fdif){
     const block='From DIS form (no matching FDIF field):\n'+unmatched.map(u=>'- '+u.label.replace(/[?:]\s*$/,'')+': '+u.text).join('\n');
     out.additionalContext=(out.additionalContext?out.additionalContext+'\n\n':'')+block;
   }
-  const labelOf=k=>{for(const s of FDIF_SECTIONS)for(const f of s.fields)if(f.k===k)return f.l;return k};
+  const QO_LBL={zillowAVM:'Quick Offer · Zillow AVM',realtorAVM:'Quick Offer · Realtor.com AVM',redfinAVM:'Quick Offer · Redfin AVM',houseCanaryAVM:'Quick Offer · House Canary AVM',cmaAVM:'Quick Offer · CMA (MLS) AVM'};
+  const LINK_LBL={zillowUrl:'Zillow Listing URL (optional override)',redfinUrl:'Redfin link (Open Redfin button)',realtorUrl:'Realtor.com link (Open Realtor.com button)'};
+  const labelOf=k=>{if(k.startsWith('qo:'))return QO_LBL[k.slice(3)]||k;if(LINK_LBL[k]&&k!=='zillowUrl')return LINK_LBL[k];for(const s of FDIF_SECTIONS)for(const f of s.fields)if(f.k===k)return f.l;return k};
   const fields=Object.entries(out).map(([key,proposed])=>{
-    const current=String(fdif[key]||'').trim();
+    const current=String((key.startsWith('qo:')?qo[key.slice(3)]:fdif[key])||'').trim();
     return{key,label:labelOf(key),current,proposed,keep:!!current&&current!==proposed,same:current===proposed,note:notes[key]};
   });
   return{fields,unmatched,matchedCount:matched.length};
@@ -2418,7 +2424,7 @@ function TabFDIF({D}){
     try{
       const parsed=await disReadFile(file);
       if(!parsed.items.length&&!parsed.extras.length){alert('No DIS form fields were found in '+file.name+'. Download the intake form from Drive as Microsoft Excel (.xlsx) and try again.');return}
-      const prop=disBuildProposal(parsed,D.deal.fdif);
+      const prop=disBuildProposal(parsed,D.deal.fdif,D.deal.quickOffer||{});
       const addr=(prop.fields.find(f=>f.key==='address')||{}).proposed||D.deal.fdif.address;
       const owner=(prop.fields.find(f=>f.key==='contactName')||{}).proposed||D.deal.fdif.contactName;
       const others=[...(D.deals||[]).filter(d=>d.id!==D.deal.id).map(d=>d.fdif&&d.fdif.marketArea),...Object.keys(D.marketRates||{}).filter(k=>k!=='__default')];
@@ -2447,7 +2453,7 @@ function TabFDIF({D}){
     for(const f of disImport.fields){
       if(f.same)continue;
       if(f.keep){kept.push(f.label);continue}
-      D.updateFDIF(f.key,f.proposed);filled.push(f.label);
+      if(f.key.startsWith('qo:'))D.updateQO(f.key.slice(3),f.proposed);else D.updateFDIF(f.key,f.proposed);filled.push(f.label);
     }
     D.updateFDIF('disImportedFrom',disImport.fileName);D.updateFDIF('disImportedAt',new Date().toISOString());
     setDisSummary({fileName:disImport.fileName,filled,kept,unmatched:disImport.unmatched,lotSource:disImport.lotSource,marketSource:disImport.marketSource});
@@ -3203,10 +3209,10 @@ function TabQuickOffer({D}){
   const addr=fdif.address?fdif.address.trim():'';
   const addrEnc=encodeURIComponent(addr);
   const addrDash=addr.replace(/\s+/g,'-');
-  const zillowLink=addr?fdif.zillowUrl||('https://www.zillow.com/homes/'+encodeURIComponent(addrDash)+'_rb/'):'';
-  const redfinLink=addr?'https://www.redfin.com/search?query='+addrEnc:'';
+  const zillowLink=fdif.zillowUrl||(addr?('https://www.zillow.com/homes/'+encodeURIComponent(addrDash)+'_rb/'):'');
+  const redfinLink=fdif.redfinUrl||(addr?'https://www.redfin.com/search?query='+addrEnc:'');
   // Realtor.com: use Google site-search since direct realtor.com search URLs are fragile
-  const realtorLink=addr?'https://www.google.com/search?q=site%3Arealtor.com+'+addrEnc:'';
+  const realtorLink=fdif.realtorUrl||(addr?'https://www.google.com/search?q=site%3Arealtor.com+'+addrEnc:'');
 
   // Currency display for AVM inputs
   const fmtCurrency=(v)=>{if(!v||v==='')return'';const n=parseFloat(String(v).replace(/[,$]/g,''));return isNaN(n)?v:'$'+Math.round(n).toLocaleString()};
