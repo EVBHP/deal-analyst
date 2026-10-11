@@ -16,6 +16,7 @@
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
 <script src="vendor/jspdf.umd.min.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
 <script>pdfjsLib.GlobalWorkerOptions.workerSrc='vendor/pdf.worker.min.js';</script>
 <style>
 :root{--navy:#202124;--navy-light:#3c4043;--accent:#1a73e8;--accent-light:#4285f4;--accent-bg:#e8f0fe;--bg:#f8f9fa;--bg-white:#fff;--surface:#fff;--border:#dadce0;--border-light:#e8eaed;--text:#202124;--text-sec:#5f6368;--text-muted:#80868b;--green:#1e8e3e;--green-bg:#e6f4ea;--green-border:#ceead6;--amber:#e37400;--amber-bg:#fef7e0;--amber-border:#fde293;--red:#d93025;--red-bg:#fce8e6;--red-border:#f5c6c0;--blue-bg:#e8f0fe;--blue-border:#aecbfa;--r:12px;--r-sm:8px;--r-lg:16px;--shadow:0 1px 2px 0 rgba(60,64,67,.3),0 1px 3px 1px rgba(60,64,67,.15);--shadow-md:0 1px 3px 0 rgba(60,64,67,.3),0 4px 8px 3px rgba(60,64,67,.15);--sans:'Google Sans','Google Sans Text','Inter',-apple-system,'Helvetica Neue',sans-serif;--mono:'DM Mono','SF Mono','Roboto Mono',monospace}
@@ -2037,6 +2038,206 @@ const FDIF_SECTIONS=[
 // Count mandatory and required fields for progress
 const MAND_FIELDS=FDIF_SECTIONS.flatMap(s=>s.fields.filter(f=>f.mand)).map(f=>f.k);
 const REQ_FIELDS=FDIF_SECTIONS.flatMap(s=>s.fields.filter(f=>f.req)).map(f=>f.k);
+/* ── DIS LEAD FORM IMPORT ─────────────────────────────────────────
+   Reads the GHPA DIS Intake Form (Google Sheet 'FDIF 2.1' + 'Calc. 2.5' tabs)
+   as downloaded from Drive (.xlsx / .csv / .pdf / .txt / .md) and maps it onto
+   FDIF fields. Rows are found by their label in column A, not by row number. */
+const DIS_NORM=s=>String(s==null?'':s).toLowerCase().replace(/[“”"*]/g,'').replace(/\s+/g,' ').trim();
+// [DIS label (prefix match, normalized), FDIF key or null, short label used when several DIS rows combine]
+const DIS_MAP=[
+  ['contact name','contactName',''],
+  ['property address','address',''],
+  ['legal owner of property','legalOwner','Legal owner'],
+  ['who is the owner','legalOwner','Owner'],
+  ['win - win price','winWinPrice',''],
+  ['extra notes','additionalContext','DIS notes'],
+  ['finding motivation','sellerMotivation',''],
+  ['ideal timeline','idealCloseDate',''],
+  ['vacant?','occupancy',''],
+  ['place to go once closed','occupiedMovePlan',''],
+  ["tenant's lease expiration date",'tenantLease','Lease expires'],
+  ['at expiration, are they moving','tenantLease','Moving at expiration'],
+  ['why sell to investor','whyInvestor',''],
+  ['general condition','majorUpdates','General condition'],
+  ['bedrooms','bedsBaths','Beds'],
+  ['bathrooms','bedsBaths','Baths'],
+  ['year purchased',null,'Year purchased'],
+  ['kitchen remodel date','kitchenCondition','Kitchen remodel'],
+  ['appliance age','kitchenCondition','Appliance age'],
+  ['appliance type','kitchenCondition','Appliance type'],
+  ['countertop type','countertopMaterial',''],
+  ['roof age','roofAgeType','Age'],
+  ['roof materials','roofAgeType','Material'],
+  ['window age','windowsReplaced',''],
+  ['floor install date','interiorFlooring','Installed'],
+  ['floor material','interiorFlooring','Material'],
+  ['carpet?','interiorFlooring','Carpet'],
+  ['date last painted','lastPainted','Last painted'],
+  ['interior?','lastPainted','Interior'],
+  ['exterior? (if brick','lastPainted','Exterior'],
+  ['exterior siding condition',null,'Siding condition'],
+  ['exterior siding type',null,'Siding type'],
+  ['cracks in bricks',null,'Cracks in bricks'],
+  ['date siding last replaced',null,'Siding last replaced'],
+  ['driveway condition','patioCondition','Driveway'],
+  ['sidewalk/entryway condition','patioCondition','Sidewalk/entry'],
+  ['deck?','outdoorStructures','Deck'],
+  ['date last sealed','outdoorStructures','Deck last sealed/painted'],
+  ['composite decking repairs','outdoorStructures','Composite repairs'],
+  ['patio?','patioCondition','Patio'],
+  ['cracks in foundation','foundationCondition',''],
+  ['water type','sewerSeptic',''],
+  ['landscaping condition','landscapingCondition',''],
+  ['overall plumbing condition',null,'Plumbing condition'],
+  ['hot water heater condition','waterHeater','Condition'],
+  ['type?','waterHeater','Type'],              // the row after Hot Water Heater; HVAC uses 'hvac type?'
+  ['date last serviced?',null,'Last serviced'],
+  ['maintenance contract?',null,'Maintenance contract'],
+  ['hvac condition','heatingType','HVAC condition'],
+  ['hvac type','heatingType','HVAC type'],
+  ['hoa?','hoaDues',''],
+  ['mortgage?','mortgageDetails','Mortgage'],
+  ['if yes, how much left','mortgageDetails','Balance left'],
+  ['bankruptcy or foreclosure','situationFlags','Bankruptcy/foreclosure'],
+  ['probate','situationFlags','Probate'],
+  ['behind on mortgage payments','paymentsCurrent','Behind on payments'],
+  ["if yes, we'll make sure",null,'Payoff note'],
+];
+const DIS_SECTION_ROWS=new Set(['funding department intake form','current situation','if vacant, skip next 3 items!','property condition','kitchen','roof','windows','floors','paint','exterior','plumbing','hvac','homeowners association','property title','form submitted']);
+const DIS_OPTS={occupancy:v=>/vacant/i.test(v)&&!/^no/i.test(v)?'Vacant':/tenant/i.test(v)?'Tenant-Occupied':/live|owner|^no$/i.test(v)?'Owner-Occupied':v};
+
+function disLookup(label){
+  const n=DIS_NORM(label);if(!n)return undefined;
+  // longest matching prefix wins so 'hvac type?' beats 'type?'
+  let best;for(const m of DIS_MAP){if(n.startsWith(m[0])&&(!best||m[0].length>best[0].length))best=m}
+  return best;
+}
+const disCell=v=>{if(v==null)return'';if(v instanceof Date)return v.toISOString().slice(0,10);return String(v).trim()};
+const disExplainLbl=s=>/^(explain:?|if vacant; how long\?|year last replaced:?|if yes, amount\?\s*)$/i.test(String(s||'').trim());
+
+// rows: array of arrays (A..E) from the FDIF tab
+function disRowsToItems(rows){
+  const items=[];let notesNext=false;
+  rows.forEach((r,i)=>{
+    const a=disCell(r[0]),b=disCell(r[1]),c=disCell(r[2]),d=disCell(r[3]);
+    const na=DIS_NORM(a);
+    if(na==='extra notes'){notesNext=true;return}
+    if(notesNext&&a&&!disLookup(a)&&!DIS_SECTION_ROWS.has(na)){items.push({label:'EXTRA NOTES',value:a,explain:''});notesNext=false;return}
+    if(na.startsWith('win - win price')){items.push({label:a,value:b||c,explain:b?c:''});return}
+    if(!a||DIS_SECTION_ROWS.has(na))return;
+    notesNext=false;
+    let value=b,explain=disExplainLbl(c)?d:'';
+    if(/^email:?$/i.test(c)){items.push({label:'Seller email',value:d,explain:''});explain=''}
+    if(/^phone:?$/i.test(c)){items.push({label:'Seller phone',value:d,explain:''});explain=''}
+    if(/^if yes, amount\?/i.test(c)&&d)explain='Amount: '+d;
+    if(/^if vacant/i.test(c)&&d)explain=d;
+    if(/^year last replaced/i.test(c)&&d)explain=d;
+    items.push({label:a,value,explain});
+  });
+  return items.filter(it=>it.value||it.explain);
+}
+
+// Calc. 2.5 tab extras: SP SQFT, AVM sources, subject sale row (row with 'SP' in col B under the comps header)
+function disCalcExtras(rows){
+  const out=[];let hdr=null;
+  for(const r of rows){
+    const b=DIS_NORM(r[1]);
+    if(b==='sp sqft'&&r[2]!=null&&r[2]!=='')out.push({label:'SP SQFT',value:disCell(r[2]),key:'sqft'});
+    if(['zillow','realtor.com','redfin','propstream','propwire'].includes(b)&&r[2]!==''&&r[2]!=null&&!isNaN(+r[2]))out.push({label:r[1].trim()+' estimate',value:'$'+Math.round(+r[2]).toLocaleString(),key:null});
+    if(b==='comp'&&DIS_NORM(r[2])==='address')hdr=r.map(DIS_NORM);
+    if(hdr&&b==='sp'){
+      const g=n=>{const i=hdr.indexOf(n);return i<0?'':disCell(r[i])};
+      if(g('yr built'))out.push({label:'Yr Built (subject)',value:String(parseInt(g('yr built'))),key:'yearBuilt'});
+      if(g('sold price'))out.push({label:'Last sale',value:'$'+Math.round(+g('sold price')).toLocaleString()+(g('sold date')?' on '+g('sold date'):''),key:null});
+      hdr=null;
+    }
+  }
+  return out;
+}
+
+// Plain text (PDF / txt / md export): split lines, then cut each known label off the front of a line.
+function disTextToRows(text){
+  const labels=[...DIS_MAP.map(m=>m[0]),'extra notes','win - win price'];
+  const rows=[];
+  for(const raw of text.split(/\r?\n/)){
+    const line=raw.replace(/\t+/g,'  ').trim();if(!line)continue;
+    const n=DIS_NORM(line);
+    const hit=labels.filter(l=>n.startsWith(l)).sort((x,y)=>y.length-x.length)[0];
+    if(!hit){rows.push([line]);continue}
+    // Recover original-case label and the rest of the line
+    const m=line.match(/^(.*?\?|[^:]*:|.*?(?=\s{2,}))\s*(.*)$/);
+    let lbl=m?m[1]:line,rest=m?m[2]:'';
+    const ex=rest.split(/\s*(?:Explain:|Year Last Replaced:|IF vacant; how long\?|If YES, amount\?)\s*/i);
+    const ep=(ex[0]||'').match(/^(.*?)\s*(Email|Phone):\s*(.*)$/i);
+    if(ep){rows.push([lbl,ep[1],ep[2]+':',ep[3]]);continue}
+    rows.push([lbl,ex[0]||'',ex.length>1?'Explain:':'',ex.slice(1).join(' ')]);
+  }
+  return rows;
+}
+
+async function disReadFile(file){
+  const name=file.name.toLowerCase();
+  let fdifRows=[],calcRows=[];
+  if(/\.(xlsx|xls|ods)$/.test(name)){
+    const wb=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:true});
+    const fName=wb.SheetNames.find(n=>/fdif/i.test(n))||wb.SheetNames[0];
+    fdifRows=XLSX.utils.sheet_to_json(wb.Sheets[fName],{header:1,defval:'',raw:true});
+    const cName=wb.SheetNames.find(n=>/calc/i.test(n));
+    if(cName)calcRows=XLSX.utils.sheet_to_json(wb.Sheets[cName],{header:1,defval:'',raw:true});
+  }else if(/\.csv$/.test(name)){
+    const wb=XLSX.read(await file.text(),{type:'string',raw:true});
+    fdifRows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''});
+  }else if(/\.pdf$/.test(name)){
+    const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;let text='';
+    for(let p=1;p<=pdf.numPages;p++){
+      const tc=await (await pdf.getPage(p)).getTextContent();let lastY=null;
+      for(const it of tc.items){const y=Math.round(it.transform[5]);text+=(lastY!=null&&Math.abs(y-lastY)>2?'\n':(text&&!text.endsWith('\n')?'  ':''))+it.str;lastY=y}
+      text+='\n';
+    }
+    fdifRows=disTextToRows(text);
+  }else if(/\.(txt|md|text)$/.test(name)){
+    fdifRows=disTextToRows((await file.text()).replace(/\|/g,'  '));
+  }else throw new Error('Unsupported file type. Use the DIS form downloaded from Drive as .xlsx (best), .csv, .pdf, .txt or .md.');
+  return{items:disRowsToItems(fdifRows),extras:disCalcExtras(calcRows)};
+}
+
+// Build proposed FDIF values + list of unmatched DIS items.
+function disBuildProposal({items,extras},fdif){
+  const acc={},unmatched=[],matched=[];
+  const add=(key,lbl,text,src)=>{(acc[key]=acc[key]||[]).push({lbl,text});matched.push({src,key})};
+  let beds='',baths='';
+  for(const it of items){
+    const m=disLookup(it.label);
+    const text=[it.value,it.explain].filter(Boolean).join(it.value&&it.explain?' — ':'');
+    if(!m){unmatched.push({label:it.label,text});continue}
+    const[,key,lbl]=m;
+    if(!key){unmatched.push({label:lbl||it.label,text});continue}
+    if(key==='bedsBaths'){if(lbl==='Beds')beds=it.value;else baths=it.value;matched.push({src:it.label,key});if(it.explain)unmatched.push({label:lbl+' note',text:it.explain});continue}
+    if(key==='occupancy'){acc.occupancy=[{lbl:'',text:DIS_OPTS.occupancy(it.value)}];matched.push({src:it.label,key});if(it.explain)add('occupiedMovePlan','Occupancy',it.explain,it.label);continue}
+    if(key==='mortgageDetails'&&lbl==='Balance left'){const n=pn(String(it.value).replace(/[~≈a-z ]/gi,''));if(n>0)acc.mortgageBalance=[{lbl:'',text:String(n)}]}
+    add(key,lbl,text,it.label);
+  }
+  if(beds||baths)acc.bedsBaths=[{lbl:'',text:(beds||'?')+'/'+(baths||'?')}];
+  for(const ex of extras){
+    if(ex.key){acc[ex.key]=[{lbl:'',text:ex.value}];matched.push({src:ex.label,key:ex.key})}
+    else unmatched.push({label:ex.label,text:ex.value});
+  }
+  const out={};
+  for(const[k,parts]of Object.entries(acc)){
+    out[k]=parts.length===1&&!parts[0].lbl?parts[0].text:parts.map(p=>p.lbl?p.lbl+': '+p.text:p.text).join('; ');
+  }
+  // Unmatched items are kept, not dropped: appended to Additional Context so nothing from the call is lost.
+  if(unmatched.length){
+    const block='From DIS form (no matching FDIF field):\n'+unmatched.map(u=>'- '+u.label.replace(/[?:]\s*$/,'')+': '+u.text).join('\n');
+    out.additionalContext=(out.additionalContext?out.additionalContext+'\n\n':'')+block;
+  }
+  const labelOf=k=>{for(const s of FDIF_SECTIONS)for(const f of s.fields)if(f.k===k)return f.l;return k};
+  const fields=Object.entries(out).map(([key,proposed])=>{
+    const current=String(fdif[key]||'').trim();
+    return{key,label:labelOf(key),current,proposed,keep:!!current&&current!==proposed,same:current===proposed};
+  });
+  return{fields,unmatched,matchedCount:matched.length};
+}
 
 function TabFDIF({D}){
   const{fdif}=D.deal;
@@ -2048,6 +2249,28 @@ function TabFDIF({D}){
   const[hcAddrPopup,setHcAddrPopup]=useState(false);     // {address, zipcode} when open, false when closed
   const[hcDiff,setHcDiff]=useState(null);                // {fields:[{key,label,current,proposed,target,keep}], summary} when modal open
   const[hcToast,setHcToast]=useState('');                // brief success/info banner
+  const[disImport,setDisImport]=useState(null);          // {fileName,fields,unmatched,matchedCount} when review modal open
+  const[disSummary,setDisSummary]=useState(null);        // result banner after applying
+  const disInputRef=React.useRef(null);
+  async function onDisFile(e){
+    const file=e.target.files&&e.target.files[0];e.target.value='';if(!file)return;
+    try{
+      const parsed=await disReadFile(file);
+      if(!parsed.items.length&&!parsed.extras.length){alert('No DIS form fields were found in '+file.name+'. Download the intake form from Drive as Microsoft Excel (.xlsx) and try again.');return}
+      setDisImport({fileName:file.name,...disBuildProposal(parsed,D.deal.fdif)});
+    }catch(err){alert('Could not read the DIS form: '+err.message)}
+  }
+  function applyDis(){
+    const filled=[],kept=[];
+    for(const f of disImport.fields){
+      if(f.same)continue;
+      if(f.keep){kept.push(f.label);continue}
+      D.updateFDIF(f.key,f.proposed);filled.push(f.label);
+    }
+    D.updateFDIF('disImportedFrom',disImport.fileName);D.updateFDIF('disImportedAt',new Date().toISOString());
+    setDisSummary({fileName:disImport.fileName,filled,kept,unmatched:disImport.unmatched});
+    setDisImport(null);
+  }
 
   // Parse "123 Main St, City, CA 92019, USA" into {address, zipcode}.
   // HouseCanary accepts a full street+city+state in `address` as long as `zipcode` is correct.
@@ -2249,6 +2472,16 @@ function TabFDIF({D}){
       <div style={{flex:1}}>
         <h2 style={{fontSize:'1.15rem',fontWeight:700}}>Funding Department Intake Form (FDIF)</h2>
         <div style={{fontSize:'.78rem',color:'var(--text-sec)',marginTop:2}}>DIS fills this out during the first call with the seller</div>
+      </div>
+      {/* DIS lead form import (client-side; Fetch button below is unchanged). */}
+      <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',marginRight:16}}>
+        <input ref={disInputRef} type="file" accept=".xlsx,.xls,.ods,.csv,.pdf,.txt,.md" style={{display:'none'}} onChange={onDisFile}/>
+        <button type="button" onClick={()=>disInputRef.current&&disInputRef.current.click()}
+          style={{padding:'14px 20px',borderRadius:'var(--r)',fontWeight:700,fontSize:'.95rem',cursor:'pointer',color:'#fff',background:'#2563eb',border:'2px solid #2563eb',boxShadow:'var(--shadow)',whiteSpace:'nowrap'}}
+          title="Fill this FDIF from the GHPA DIS intake form (download it from Drive as .xlsx, .csv, .pdf or .txt)">
+          📄 Upload DIS Lead Form
+        </button>
+        <div style={{fontSize:'.68rem',color:'var(--text-sec)',marginTop:4,textAlign:'center',maxWidth:190}}>{fdif.disImportedFrom?'Last: '+fdif.disImportedFrom:'.xlsx (best), .csv, .pdf, .txt'}</div>
       </div>
       {/* HC autofill button — large, red until used, green after success. */}
       <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',marginRight:24}}>
@@ -2657,6 +2890,32 @@ function TabFDIF({D}){
     </div>}
 
     {/* HC diff modal — shown when HC values conflict with already-entered fields */}
+    {disSummary&&<div className="card" style={{position:'fixed',right:20,bottom:20,zIndex:999,maxWidth:460,maxHeight:'60vh',overflow:'auto',background:'#fff',border:'2px solid #2563eb',padding:16,boxShadow:'0 10px 30px rgba(0,0,0,.2)'}} data-testid="dis-summary">
+      <div className="f ac jb"><b>DIS form imported</b><button className="btn" onClick={()=>setDisSummary(null)}>✕</button></div>
+      <div style={{fontSize:'.78rem',color:'var(--text-sec)',margin:'4px 0 8px'}}>{disSummary.fileName}. Click Save to keep the changes.</div>
+      <div style={{fontSize:'.8rem'}}><b style={{color:'var(--green)'}}>Filled ({disSummary.filled.length}):</b> {disSummary.filled.join(' · ')||'none'}</div>
+      {disSummary.kept.length>0&&<div style={{fontSize:'.8rem',marginTop:6}}><b style={{color:'var(--amber)'}}>Kept your existing value ({disSummary.kept.length}):</b> {disSummary.kept.join(' · ')}</div>}
+      <div style={{fontSize:'.8rem',marginTop:6}}><b style={{color:'var(--red)'}}>DIS fields with no FDIF match ({disSummary.unmatched.length}):</b> {disSummary.unmatched.map(u=>u.label.replace(/[?:]\s*$/,'')).join(' · ')||'none'}{disSummary.unmatched.length>0&&<div style={{color:'var(--text-sec)',marginTop:2}}>These were added to "Additional context" so nothing is lost.</div>}</div>
+    </div>}
+    {disImport&&<div onClick={()=>setDisImport(null)} style={{position:'fixed',inset:0,background:'rgba(15,23,42,.5)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:'#fff',borderRadius:12,maxWidth:900,width:'100%',maxHeight:'88vh',overflow:'auto',padding:20}} data-testid="dis-review">
+        <h3 style={{fontWeight:700,marginBottom:4}}>Import DIS Lead Form</h3>
+        <div style={{fontSize:'.8rem',color:'var(--text-sec)',marginBottom:10}}>{disImport.fileName}: {disImport.fields.length} FDIF fields to fill from {disImport.matchedCount} DIS answers. {disImport.unmatched.length} DIS answers have no FDIF field and go into Additional context. Fields you already filled are <b>kept</b> unless you tick Overwrite.</div>
+        <table style={{width:'100%',fontSize:'.78rem',borderCollapse:'collapse'}}>
+          <thead><tr style={{textAlign:'left',borderBottom:'1px solid var(--border)'}}><th style={{padding:4}}>FDIF field</th><th style={{padding:4}}>Current</th><th style={{padding:4}}>From DIS form</th><th style={{padding:4}}>Overwrite?</th></tr></thead>
+          <tbody>{disImport.fields.map((f,i)=><tr key={f.key} style={{borderBottom:'1px solid var(--border)',verticalAlign:'top',background:f.current&&!f.same?'#FFF8E6':''}}>
+            <td style={{padding:4,maxWidth:200}}>{f.label}</td>
+            <td style={{padding:4,maxWidth:200,whiteSpace:'pre-wrap',color:'var(--text-sec)'}}>{f.current||'—'}</td>
+            <td style={{padding:4,maxWidth:340,whiteSpace:'pre-wrap'}}>{f.proposed}</td>
+            <td style={{padding:4,textAlign:'center'}}>{f.same?'same':!f.current?'fills empty':<input type="checkbox" checked={!f.keep} onChange={e=>setDisImport(p=>({...p,fields:p.fields.map((x,j)=>j===i?{...x,keep:!e.target.checked}:x)}))}/>}</td>
+          </tr>)}</tbody>
+        </table>
+        <div className="f ac" style={{gap:8,justifyContent:'flex-end',marginTop:14}}>
+          <button className="btn" onClick={()=>setDisImport(null)}>Cancel</button>
+          <button className="btn" style={{background:'#2563eb',color:'#fff',borderColor:'#2563eb'}} onClick={applyDis} data-testid="dis-apply">Apply to FDIF</button>
+        </div>
+      </div>
+    </div>}
     {hcDiff&&<div onClick={()=>setHcDiff(null)} style={{position:'fixed',inset:0,background:'rgba(15,23,42,.5)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
       <div onClick={e=>e.stopPropagation()} style={{background:'#fff',borderRadius:'var(--r-lg)',padding:24,maxWidth:720,width:'100%',maxHeight:'85vh',overflow:'auto',boxShadow:'var(--shadow-md)'}}>
         <h3 style={{fontSize:'1.1rem',fontWeight:700,marginBottom:6}}>Review HouseCanary updates</h3>
