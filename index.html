@@ -17,6 +17,7 @@
 <script src="vendor/jszip.min.js"></script>
 <script src="vendor/jspdf.umd.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
+<script src="config.js"></script>
 <script>pdfjsLib.GlobalWorkerOptions.workerSrc='vendor/pdf.worker.min.js';</script>
 <style>
 :root{--navy:#202124;--navy-light:#3c4043;--accent:#1a73e8;--accent-light:#4285f4;--accent-bg:#e8f0fe;--bg:#f8f9fa;--bg-white:#fff;--surface:#fff;--border:#dadce0;--border-light:#e8eaed;--text:#202124;--text-sec:#5f6368;--text-muted:#80868b;--green:#1e8e3e;--green-bg:#e6f4ea;--green-border:#ceead6;--amber:#e37400;--amber-bg:#fef7e0;--amber-border:#fde293;--red:#d93025;--red-bg:#fce8e6;--red-border:#f5c6c0;--blue-bg:#e8f0fe;--blue-border:#aecbfa;--r:12px;--r-sm:8px;--r-lg:16px;--shadow:0 1px 2px 0 rgba(60,64,67,.3),0 1px 3px 1px rgba(60,64,67,.15);--shadow-md:0 1px 3px 0 rgba(60,64,67,.3),0 4px 8px 3px rgba(60,64,67,.15);--sans:'Google Sans','Google Sans Text','Inter',-apple-system,'Helvetica Neue',sans-serif;--mono:'DM Mono','SF Mono','Roboto Mono',monospace}
@@ -2238,6 +2239,62 @@ function disBuildProposal({items,extras},fdif){
   });
   return{fields,unmatched,matchedCount:matched.length};
 }
+/* ── GOOGLE DRIVE PICKER (DIS form) ───────────────────────────────
+   Loaded on demand only when the user clicks "Pick from Google Drive".
+   Token stays in memory; nothing is stored or sent anywhere but Google. */
+const GCFG=()=>window.DEAL_ANALYST_CONFIG||{};
+const loadScriptOnce=(src)=>new Promise((res,rej)=>{
+  if(document.querySelector('script[src="'+src+'"]'))return res();
+  const s=document.createElement('script');s.src=src;s.async=true;s.onload=res;s.onerror=()=>rej(new Error('Could not load '+src));document.head.appendChild(s);
+});
+let gdToken=null,gdTokenExp=0;
+async function gdGetToken(){
+  const c=GCFG();
+  if(gdToken&&Date.now()<gdTokenExp-60000)return gdToken;
+  await loadScriptOnce('https://accounts.google.com/gsi/client');
+  return new Promise((res,rej)=>{
+    const tc=google.accounts.oauth2.initTokenClient({client_id:c.googleClientId,scope:c.googleScope||'https://www.googleapis.com/auth/drive.readonly',
+      callback:r=>{if(r.error)return rej(new Error(r.error_description||r.error));gdToken=r.access_token;gdTokenExp=Date.now()+(r.expires_in||3600)*1000;res(gdToken)},
+      error_callback:e=>rej(new Error(e.message||e.type||'Sign-in cancelled'))});
+    tc.requestAccessToken({prompt:gdToken?'':'consent'});
+  });
+}
+async function gdPickFile(){
+  const c=GCFG();
+  await loadScriptOnce('https://apis.google.com/js/api.js');
+  await new Promise((res,rej)=>gapi.load('picker',{callback:res,onerror:()=>rej(new Error('Picker failed to load'))}));
+  const token=await gdGetToken();
+  const P=google.picker;
+  return new Promise(res=>{
+    const sheets=new P.DocsView(P.ViewId.SPREADSHEETS).setIncludeFolders(true).setSelectFolderEnabled(false).setEnableDrives(true)
+      .setMimeTypes('application/vnd.google-apps.spreadsheet,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,application/pdf,text/plain');
+    if(c.driveStartFolderId)sheets.setParent(c.driveStartFolderId);
+    const all=new P.DocsView(P.ViewId.DOCS).setIncludeFolders(true).setEnableDrives(true);
+    const b=new P.PickerBuilder().setOAuthToken(token).setDeveloperKey(c.googleApiKey)
+      .enableFeature(P.Feature.SUPPORT_DRIVES).addView(sheets).addView(all).setTitle('Pick the DIS intake form')
+      .setCallback(d=>{
+        if(d[P.Response.ACTION]===P.Action.PICKED)res(d[P.Response.DOCUMENTS][0]);
+        else if(d[P.Response.ACTION]===P.Action.CANCEL)res(null);
+      });
+    if(c.googleAppId)b.setAppId(c.googleAppId);
+    b.build().setVisible(true);
+  });
+}
+// Download the picked file as a File object the existing DIS parser understands.
+async function gdDownloadAsFile(doc){
+  const token=await gdGetToken();
+  const id=doc[google.picker.Document.ID],mime=doc[google.picker.Document.MIME_TYPE]||'';
+  let name=doc[google.picker.Document.NAME]||'DIS form',url;
+  if(mime==='application/vnd.google-apps.spreadsheet'){
+    url='https://www.googleapis.com/drive/v3/files/'+id+'/export?mimeType='+encodeURIComponent('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    if(!/\.xlsx$/i.test(name))name+='.xlsx';
+  }else if(mime==='application/vnd.google-apps.document'){
+    url='https://www.googleapis.com/drive/v3/files/'+id+'/export?mimeType=text/plain';if(!/\.txt$/i.test(name))name+='.txt';
+  }else url='https://www.googleapis.com/drive/v3/files/'+id+'?alt=media&supportsAllDrives=true';
+  const r=await fetch(url,{headers:{Authorization:'Bearer '+token}});
+  if(!r.ok){let m='';try{m=(await r.json()).error.message}catch{}throw new Error('Drive download failed (HTTP '+r.status+')'+(m?': '+m:''))}
+  return new File([await r.blob()],name);
+}
 
 function TabFDIF({D}){
   const{fdif}=D.deal;
@@ -2252,8 +2309,17 @@ function TabFDIF({D}){
   const[disImport,setDisImport]=useState(null);          // {fileName,fields,unmatched,matchedCount} when review modal open
   const[disSummary,setDisSummary]=useState(null);        // result banner after applying
   const disInputRef=React.useRef(null);
+  const[gdBusy,setGdBusy]=useState(false);
+  async function onDriveClick(){
+    const c=window.DEAL_ANALYST_CONFIG||{};
+    if(!c.googleClientId||!c.googleApiKey){alert('Google Drive picking needs a one-time setup.\n\nAn admin must create a Google Cloud OAuth client ID and API key and add them to config.js (googleClientId, googleApiKey). See SETUP-GOOGLE-DRIVE.md in the repo.\n\nUntil then, download the intake form from Drive as .xlsx and use "Upload DIS Lead Form".');return}
+    setGdBusy(true);
+    try{const doc=await gdPickFile();if(doc)await onDisFile({target:{files:[await gdDownloadAsFile(doc)],value:''}})}
+    catch(err){alert('Google Drive: '+err.message)}
+    finally{setGdBusy(false)}
+  }
   async function onDisFile(e){
-    const file=e.target.files&&e.target.files[0];e.target.value='';if(!file)return;
+    const file=e.target.files&&e.target.files[0];try{e.target.value=''}catch{};if(!file)return;
     try{
       const parsed=await disReadFile(file);
       if(!parsed.items.length&&!parsed.extras.length){alert('No DIS form fields were found in '+file.name+'. Download the intake form from Drive as Microsoft Excel (.xlsx) and try again.');return}
@@ -2481,6 +2547,9 @@ function TabFDIF({D}){
           title="Fill this FDIF from the GHPA DIS intake form (download it from Drive as .xlsx, .csv, .pdf or .txt)">
           📄 Upload DIS Lead Form
         </button>
+        <button type="button" onClick={onDriveClick} disabled={gdBusy} data-testid="dis-drive"
+          style={{marginTop:6,padding:'6px 12px',borderRadius:'var(--r)',fontWeight:600,fontSize:'.78rem',cursor:gdBusy?'wait':'pointer',color:'#2563eb',background:'#fff',border:'1px solid #2563eb',whiteSpace:'nowrap'}}
+          title="Pick the DIS intake Sheet straight from Google Drive">{gdBusy?'⏳ Opening Drive…':'☁️ Pick from Google Drive'}</button>
         <div style={{fontSize:'.68rem',color:'var(--text-sec)',marginTop:4,textAlign:'center',maxWidth:190}}>{fdif.disImportedFrom?'Last: '+fdif.disImportedFrom:'.xlsx (best), .csv, .pdf, .txt'}</div>
       </div>
       {/* HC autofill button — large, red until used, green after success. */}

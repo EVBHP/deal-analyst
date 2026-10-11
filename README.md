@@ -6,3 +6,4 @@ Still external: Google Fonts (cosmetic), Calendly/Zillow/Redfin/Google links (us
 Backend not duplicated: POST /.netlify/functions/api-proxy (relative path) used for
 HouseCanary property data fetch and Airtable deal sync. Locally it fails gracefully; data stays in localStorage ('tphp-deal-eval').
 Run: python3 -m http.server 8765  then open http://localhost:8765/
+Google Drive picker: see SETUP-GOOGLE-DRIVE.md; values go in config.js.
