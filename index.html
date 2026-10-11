@@ -2151,6 +2151,7 @@ function disCalcExtras(rows){
   for(const r of rows){
     const b=DIS_NORM(r[1]);
     if(b==='sp sqft'&&r[2]!=null&&r[2]!=='')out.push({label:'SP SQFT',value:disCell(r[2]),key:'sqft'});
+    if(/^(sp )?lot size$/.test(b)&&r[2]!=null&&r[2]!=='')out.push({label:'SP Lot Size',value:fmtLotSize(disCell(r[2])),key:'lotSize',note:(r[10]?'DIS form ('+disCell(r[10])+')':'DIS form')});
     if(['zillow','realtor.com','redfin','propstream','propwire'].includes(b)&&r[2]!==''&&r[2]!=null&&!isNaN(+r[2]))out.push({label:r[1].trim()+' estimate',value:'$'+Math.round(+r[2]).toLocaleString(),key:null});
     if(b==='comp'&&DIS_NORM(r[2])==='address')hdr=r.map(DIS_NORM);
     if(hdr&&b==='sp'){
@@ -2227,9 +2228,10 @@ function disBuildProposal({items,extras},fdif){
   }
   if(beds||baths)acc.bedsBaths=[{lbl:'',text:(beds||'?')+'/'+(baths||'?')}];
   for(const ex of extras){
-    if(ex.key){acc[ex.key]=[{lbl:'',text:ex.value}];matched.push({src:ex.label,key:ex.key})}
+    if(ex.key){acc[ex.key]=[{lbl:'',text:ex.value}];matched.push({src:ex.label,key:ex.key});if(ex.note)(acc.__notes=acc.__notes||{})[ex.key]=ex.note}
     else unmatched.push({label:ex.label,text:ex.value});
   }
+  const notes=acc.__notes||{};delete acc.__notes;
   if(acc.lotSize)acc.lotSize=[{lbl:'',text:fmtLotSize(acc.lotSize[0].text)}];
   const out={};
   for(const[k,parts]of Object.entries(acc)){
@@ -2243,14 +2245,15 @@ function disBuildProposal({items,extras},fdif){
   const labelOf=k=>{for(const s of FDIF_SECTIONS)for(const f of s.fields)if(f.k===k)return f.l;return k};
   const fields=Object.entries(out).map(([key,proposed])=>{
     const current=String(fdif[key]||'').trim();
-    return{key,label:labelOf(key),current,proposed,keep:!!current&&current!==proposed,same:current===proposed};
+    return{key,label:labelOf(key),current,proposed,keep:!!current&&current!==proposed,same:current===proposed,note:notes[key]};
   });
   return{fields,unmatched,matchedCount:matched.length};
 }
 // "0.25 ac (10,890 sq ft)". Accepts acres or square feet (values > 200 are taken as sq ft).
 function fmtLotSize(v){
   const s=String(v==null?'':v).trim();if(!s)return'';
-  const n=parseFloat(s.replace(/[^0-9.]/g,''));if(!(n>0))return s;
+  if(/^\d*\.?\d+ ac \([\d,]+ sq ft\)$/.test(s))return s;
+  const mm=s.replace(/,/g,'').match(/\d*\.?\d+/);const n=mm?parseFloat(mm[0]):NaN;if(!(n>0))return s;
   const isSf=/sq|sf|ft/i.test(s)||(!/ac/i.test(s)&&n>200);
   const ac=isSf?n/43560:n,sf=Math.round(isSf?n:n*43560);
   return ac.toFixed(ac<0.1?3:2)+' ac ('+sf.toLocaleString()+' sq ft)';
