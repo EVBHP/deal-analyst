@@ -2186,13 +2186,19 @@ function disTextToRows(text){
 
 async function disReadFile(file){
   const name=file.name.toLowerCase();
-  let fdifRows=[],calcRows=[];
+  let fdifRows=[],calcRows=[],zillowUrl='';
   if(/\.(xlsx|xls|ods)$/.test(name)){
     const wb=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:true});
     const fName=wb.SheetNames.find(n=>/fdif/i.test(n))||wb.SheetNames[0];
     fdifRows=XLSX.utils.sheet_to_json(wb.Sheets[fName],{header:1,defval:'',raw:true});
     const cName=wb.SheetNames.find(n=>/calc/i.test(n));
     if(cName)calcRows=XLSX.utils.sheet_to_json(wb.Sheets[cName],{header:1,defval:'',raw:true});
+    if(cName){const cs=wb.Sheets[cName],rng=XLSX.utils.decode_range(cs['!ref']||'A1');
+      for(let R=rng.s.r;R<=Math.min(rng.e.r,60);R++){const lab=cs[XLSX.utils.encode_cell({r:R,c:1})];
+        if(lab&&/^zillow$/i.test(String(lab.v).trim())){const L=cs[XLSX.utils.encode_cell({r:R,c:11})];
+          const url=(L&&L.l&&L.l.Target)||(L&&/^https?:\/\//.test(String(L.v))?String(L.v):'');
+          const m=url&&String(url).match(/https?:\/\/(www\.)?zillow\.com\/[^\s)"]+/i);
+          if(m)zillowUrl=m[0];break}}}
   }else if(/\.csv$/.test(name)){
     const wb=XLSX.read(await file.text(),{type:'string',raw:true});
     fdifRows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''});
@@ -2207,7 +2213,8 @@ async function disReadFile(file){
   }else if(/\.(txt|md|text)$/.test(name)){
     fdifRows=disTextToRows((await file.text()).replace(/\|/g,'  '));
   }else throw new Error('Unsupported file type. Use the DIS form downloaded from Drive as .xlsx (best), .csv, .pdf, .txt or .md.');
-  return{items:disRowsToItems(fdifRows),extras:disCalcExtras(calcRows)};
+  const extras=disCalcExtras(calcRows);if(zillowUrl)extras.push({label:'Zillow link (L19)',value:zillowUrl,key:'zillowUrl',note:'DIS form Calc. 2.5 L19 hyperlink'});
+  return{items:disRowsToItems(fdifRows),extras};
 }
 
 // Build proposed FDIF values + list of unmatched DIS items.
@@ -2281,6 +2288,25 @@ async function lookupNCLotSize(address,ownerHint){
   const ownerMatch=last&&last.length>2?String(x.ownname||'').toUpperCase().includes(last.toUpperCase()):null;
   return{value:fmtLotSize(x.gisacres),acres:x.gisacres,parcel:x.parno,county:x.cntyname,siteadd:x.siteadd,ownerMatch,
     note:'NC OneMap parcels: '+x.cntyname+' Co. parcel '+x.parno+' ('+x.siteadd+')'+(ownerMatch===false?' — owner on record differs from contact, check':'')};
+}
+
+// Market / Area from the address: reuse an existing market when it matches the city
+// (or the city's metro), otherwise "City, ST".
+const CLT_METRO=['charlotte','gastonia','concord','huntersville','matthews','mint hill','monroe','indian trail','waxhaw','stallings','cornelius','davidson','mooresville','kannapolis','harrisburg','belmont','mount holly','cramerton','lowell','dallas','cherryville','bessemer city','kings mountain','shelby','lincolnton','denver','statesville','salisbury','albemarle','locust','midland','pineville','fort mill','rock hill','tega cay','lake wylie','clover','york','lancaster','indian land','wingate','marshville','weddington','wesley chapel'];
+function deriveMarket(address,existing){
+  const parts=String(address||'').split(',').map(s=>s.trim()).filter(Boolean);
+  if(parts.length<2)return null;
+  const city=parts[parts.length-2].replace(/\s+/g,' ');
+  const st=((parts[parts.length-1].match(/\b([A-Z]{2})\b/)||[])[1]||'').toUpperCase();
+  if(!city||/\d/.test(city))return null;
+  const cityTitle=city.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());
+  const norm=s=>String(s).toLowerCase().replace(/\b(metro|area|market)\b/g,'').replace(/,\s*[a-z]{2}\s*$/,'').replace(/[^a-z ]/g,' ').replace(/\s+/g,' ').trim();
+  const uniq=[...new Set((existing||[]).map(s=>String(s).trim()).filter(Boolean))];
+  const hit=uniq.find(m=>norm(m)===city.toLowerCase());
+  if(hit)return{value:hit,note:'matches existing market'};
+  const inClt=(st==='NC'||st==='SC')&&CLT_METRO.includes(city.toLowerCase());
+  if(inClt){const m=uniq.find(m=>norm(m)==='charlotte');if(m)return{value:m,note:cityTitle+' is in the Charlotte metro (existing market)'}}
+  return{value:cityTitle+(st?', '+st:''),note:'city from address'+(inClt?' (Charlotte metro)':'')};
 }
 
 /* ── GOOGLE DRIVE PICKER (DIS form) ───────────────────────────────
@@ -2368,6 +2394,11 @@ function TabFDIF({D}){
       const parsed=await disReadFile(file);
       if(!parsed.items.length&&!parsed.extras.length){alert('No DIS form fields were found in '+file.name+'. Download the intake form from Drive as Microsoft Excel (.xlsx) and try again.');return}
       const prop=disBuildProposal(parsed,D.deal.fdif);
+      {const addr=(prop.fields.find(f=>f.key==='address')||{}).proposed||D.deal.fdif.address;
+       const others=[...(D.deals||[]).filter(d=>d.id!==D.deal.id).map(d=>d.fdif&&d.fdif.marketArea),...Object.keys(D.marketRates||{}).filter(k=>k!=='__default')];
+       const mk=deriveMarket(addr,others);
+       if(mk){const current=String(D.deal.fdif.marketArea||'').trim();
+         prop.fields.push({key:'marketArea',label:'Market / Area',current,proposed:mk.value,keep:!!current&&current!==mk.value,same:current===mk.value,note:mk.note})}}
       if(!prop.fields.some(f=>f.key==='lotSize')){
         const addr=(prop.fields.find(f=>f.key==='address')||{}).proposed||D.deal.fdif.address;
         const owner=(prop.fields.find(f=>f.key==='contactName')||{}).proposed||D.deal.fdif.contactName;
