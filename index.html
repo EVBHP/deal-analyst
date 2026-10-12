@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<meta http-equiv="Cache-Control" content="no-cache"><meta name="da-build" content="2026-10-11b">
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>TPHP — Deal Evaluation</title>
@@ -2265,6 +2266,10 @@ function disBuildProposal({items,extras},fdif,qo={}){
         current:cur.length?cur.length+' comp'+(cur.length>1?'s':'')+': '+cur.map(c=>c.address||'(no address)').join('; '):'',
         proposed:ex.value.length+' comp'+(ex.value.length>1?'s':'')+':\n'+ex.value.map(c=>'• '+c.address+' — '+fmt(pn(c.price))+(c.listPrice?' (list '+fmt(pn(c.listPrice))+')':'')+(c.sqft?', '+c.sqft+' sf':'')+(c.saleDate?', sold '+c.saleDate:'')).join('\n'),
         note:'DIS form Calc. 2.5 Calculator #1 rows 42+'+(ex.skipped.length?' · skipped '+ex.skipped.join(', '):'')};
+      // Fill-empty merge: existing comps with the same address get blank fields (e.g. List Price) filled even when "keep" is on.
+      if(compField&&cur.length){const nk=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');const F=['listPrice','sqft','price','saleDate','dom','yearBuilt','bedBath'];const FL={listPrice:'list price',sqft:'sqft',price:'sale price',saleDate:'sale date',dom:'DOM',yearBuilt:'yr built',bedBath:'bed/bath'};
+        const merge=[];for(const c of cur){const m=ex.value.find(x=>nk(x.address)&&nk(x.address)===nk(c.address));if(!m)continue;const fs=F.filter(k=>!String(c[k]||'').trim()&&String(m[k]||'').trim());if(fs.length)merge.push({id:c.id,address:c.address,patch:Object.fromEntries(fs.map(k=>[k,m[k]])),labels:fs.map(k=>FL[k]+' '+(k==='listPrice'||k==='price'?fmt(pn(m[k])):m[k]))})}
+        if(merge.length){compField.merge=merge;compField.note+=' · empty cells on '+merge.length+' matching existing comp'+(merge.length>1?'s':'')+' will be filled even if kept: '+merge.map(x=>x.address.split(',')[0]+' ('+x.labels.join(', ')+')').join('; ')}}
       continue;
     }
     if(ex.key){acc[ex.key]=[{lbl:'',text:ex.value}];matched.push({src:ex.label,key:ex.key});if(ex.note)(acc.__notes=acc.__notes||{})[ex.key]=ex.note}
@@ -2479,6 +2484,9 @@ function TabFDIF({D}){
     const filled=[],kept=[];
     for(const f of disImport.fields){
       if(f.same)continue;
+      if(f.isComps&&f.keep&&f.merge){const ids=new Map(f.merge.map(m=>[m.id,m.patch]));
+        D.updateDeal({comps:{...D.deal.comps,asIs:(D.deal.comps.asIs||[]).map(c=>ids.has(c.id)?{...c,...ids.get(c.id)}:c)}});
+        filled.push(f.label+': filled empty cells on '+f.merge.length+' existing comp'+(f.merge.length>1?'s':'')+' ('+[...new Set(f.merge.flatMap(m=>m.labels.map(l=>l.split(' ')[0]==='list'?'list price':l.replace(/ [^ ]*$/,''))))].join(', ')+')');kept.push(f.label+' (other comp data kept)');continue}
       if(f.keep){kept.push(f.label);continue}
       if(f.isComps){const list=f.comps.map(c=>({...blankComp(),...c}));while(list.length<3)list.push(blankComp());
         D.updateDeal({comps:{...D.deal.comps,asIs:list}});filled.push(f.label+' ('+f.comps.length+')');continue}
@@ -3130,7 +3138,7 @@ function TabFDIF({D}){
             <td style={{padding:4,maxWidth:200}}>{f.label}</td>
             <td style={{padding:4,maxWidth:200,whiteSpace:'pre-wrap',color:'var(--text-sec)'}}>{f.current||'—'}</td>
             <td style={{padding:4,maxWidth:340,whiteSpace:'pre-wrap'}}>{f.proposed}{f.note&&<div style={{fontSize:'.7rem',color:'var(--text-sec)',marginTop:2}}>Source: {f.note}</div>}</td>
-            <td style={{padding:4,textAlign:'center'}}>{f.same?'same':!f.current?'fills empty':<input type="checkbox" checked={!f.keep} onChange={e=>setDisImport(p=>({...p,fields:p.fields.map((x,j)=>j===i?{...x,keep:!e.target.checked}:x)}))}/>}</td>
+            <td style={{padding:4,textAlign:'center'}}>{f.same?'same':!f.current?'fills empty':<input type="checkbox" checked={!f.keep} onChange={e=>setDisImport(p=>({...p,fields:p.fields.map((x,j)=>j===i?{...x,keep:!e.target.checked}:x)}))}/>}{f.merge&&f.keep&&<div style={{fontSize:'.68rem',color:'var(--green)',fontWeight:600,whiteSpace:'nowrap'}}>+ fills {f.merge.length} empty</div>}</td>
           </tr>)}</tbody>
         </table>
         <div className="f ac" style={{gap:8,justifyContent:'flex-end',marginTop:14}}>
@@ -6922,6 +6930,9 @@ function App(){
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+<script>/* stale-cache guard: if a newer build is deployed, reload once */
+(function(){try{var cur=(document.querySelector('meta[name=da-build]')||{}).content;fetch(location.pathname+'?v='+Date.now(),{cache:'no-store'}).then(function(r){return r.text()}).then(function(h){var m=h.match(/name="da-build" content="([^"]+)"/);if(m&&cur&&m[1]!==cur&&sessionStorage.getItem('da-reloaded')!==m[1]){sessionStorage.setItem('da-reloaded',m[1]);location.replace(location.pathname+'?v='+m[1]+location.hash)}}).catch(function(){})}catch(e){}})();
 </script>
 </body>
 </html>
