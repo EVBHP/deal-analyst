@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta http-equiv="Cache-Control" content="no-cache"><meta name="da-build" content="2026-10-11b">
+<meta http-equiv="Cache-Control" content="no-cache"><meta name="da-build" content="2026-10-11c">
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>TPHP — Deal Evaluation</title>
@@ -2258,7 +2258,7 @@ function disBuildProposal({items,extras},fdif,qo={}){
     add(key,lbl,text,it.label);
   }
   if(beds||baths)acc.bedsBaths=[{lbl:'',text:(beds||'?')+'/'+(baths||'?')}];
-  let compField=null;
+  let compField=null,renoCleanup=null;
   for(const ex of extras){
     if(ex.key==='comps:asIs'){
       const cur=((fdif.__comps&&fdif.__comps.asIs)||[]).filter(c=>c.address||c.price);
@@ -2266,6 +2266,13 @@ function disBuildProposal({items,extras},fdif,qo={}){
         current:cur.length?cur.length+' comp'+(cur.length>1?'s':'')+': '+cur.map(c=>c.address||'(no address)').join('; '):'',
         proposed:ex.value.length+' comp'+(ex.value.length>1?'s':'')+':\n'+ex.value.map(c=>'• '+c.address+' — '+fmt(pn(c.price))+(c.listPrice?' (list '+fmt(pn(c.listPrice))+')':'')+(c.sqft?', '+c.sqft+' sf':'')+(c.saleDate?', sold '+c.saleDate:'')).join('\n'),
         note:'DIS form Calc. 2.5 Calculator #1 rows 42+'+(ex.skipped.length?' · skipped '+ex.skipped.join(', '):'')};
+      // Cleanup: an earlier import version put DIS comps in Renovated. Remove only those (DIS marker in notes AND address matches a DIS comp row).
+      {const nk=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');const dis=new Set(ex.value.map(x=>nk(x.address)).filter(Boolean));
+       const rn=((fdif.__comps&&fdif.__comps.renovated)||[]).filter(c=>/\[DIS form row \d+\]/.test(c.notes||'')&&dis.has(nk(c.address)));
+       if(rn.length)renoCleanup={key:'comps:renoCleanup',label:'Full Deal Eval · Renovated comps cleanup',isRenoCleanup:true,ids:rn.map(c=>c.id),
+         current:rn.length+' DIS comp'+(rn.length>1?'s':'')+' in Renovated: '+rn.map(c=>c.address.split(',')[0]).join('; '),
+         proposed:'removes '+rn.length+' DIS comp'+(rn.length>1?'s':'')+' from Renovated (moved to As-Is)',keep:false,same:false,
+         note:'Left over from an earlier DIS import; manually added Renovated comps are never removed. Untick to keep them.'}}
       // Fill-empty merge: existing comps with the same address get blank fields (e.g. List Price) filled even when "keep" is on.
       if(compField&&cur.length){const nk=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');const F=['listPrice','sqft','price','saleDate','dom','yearBuilt','bedBath'];const FL={listPrice:'list price',sqft:'sqft',price:'sale price',saleDate:'sale date',dom:'DOM',yearBuilt:'yr built',bedBath:'bed/bath'};
         const merge=[];for(const c of cur){const m=ex.value.find(x=>nk(x.address)&&nk(x.address)===nk(c.address));if(!m)continue;const fs=F.filter(k=>!String(c[k]||'').trim()&&String(m[k]||'').trim());if(fs.length)merge.push({id:c.id,address:c.address,patch:Object.fromEntries(fs.map(k=>[k,m[k]])),labels:fs.map(k=>FL[k]+' '+(k==='listPrice'||k==='price'?fmt(pn(m[k])):m[k]))})}
@@ -2294,6 +2301,7 @@ function disBuildProposal({items,extras},fdif,qo={}){
     return{key,label:labelOf(key),current,proposed,keep:!!current&&current!==proposed,same:current===proposed,note:notes[key]};
   });
   if(compField){compField.keep=!!compField.current;compField.same=false;fields.push(compField)}
+  if(renoCleanup)fields.push(renoCleanup);
   return{fields,unmatched,matchedCount:matched.length};
 }
 // "0.25 ac (10,890 sq ft)". Accepts acres or square feet (values > 200 are taken as sq ft).
@@ -2481,17 +2489,19 @@ function TabFDIF({D}){
     }catch(err){alert('Could not read the DIS form: '+err.message)}
   }
   function applyDis(){
-    const filled=[],kept=[];
+    const filled=[],kept=[];let comps=null;const C=()=>comps||(comps={...D.deal.comps});
     for(const f of disImport.fields){
+      if(f.isRenoCleanup){if(f.keep){kept.push(f.label);continue}const ids=new Set(f.ids);let rn=(C().renovated||[]).filter(c=>!ids.has(c.id));if(!rn.some(c=>c.address||c.price))rn=[...rn.filter(c=>c.address||c.price)];while(rn.length<3)rn.push(blankComp());comps.renovated=rn;filled.push('Removed '+f.ids.length+' DIS comp'+(f.ids.length>1?'s':'')+' from Renovated (moved to As-Is)');continue}
       if(f.same)continue;
       if(f.isComps&&f.keep&&f.merge){const ids=new Map(f.merge.map(m=>[m.id,m.patch]));
-        D.updateDeal({comps:{...D.deal.comps,asIs:(D.deal.comps.asIs||[]).map(c=>ids.has(c.id)?{...c,...ids.get(c.id)}:c)}});
+        C().asIs=(C().asIs||[]).map(c=>ids.has(c.id)?{...c,...ids.get(c.id)}:c);
         filled.push(f.label+': filled empty cells on '+f.merge.length+' existing comp'+(f.merge.length>1?'s':'')+' ('+[...new Set(f.merge.flatMap(m=>m.labels.map(l=>l.split(' ')[0]==='list'?'list price':l.replace(/ [^ ]*$/,''))))].join(', ')+')');kept.push(f.label+' (other comp data kept)');continue}
       if(f.keep){kept.push(f.label);continue}
       if(f.isComps){const list=f.comps.map(c=>({...blankComp(),...c}));while(list.length<3)list.push(blankComp());
-        D.updateDeal({comps:{...D.deal.comps,asIs:list}});filled.push(f.label+' ('+f.comps.length+')');continue}
+        C().asIs=list;filled.push(f.label+' ('+f.comps.length+')');continue}
       if(f.key.startsWith('qo:'))D.updateQO(f.key.slice(3),f.proposed);else D.updateFDIF(f.key,f.proposed);filled.push(f.label);
     }
+    if(comps)D.updateDeal({comps});
     D.updateFDIF('disImportedFrom',disImport.fileName);D.updateFDIF('disImportedAt',new Date().toISOString());
     setDisSummary({fileName:disImport.fileName,filled,kept,unmatched:disImport.unmatched,lotSource:disImport.lotSource,marketSource:disImport.marketSource});
     setDisImport(null);
