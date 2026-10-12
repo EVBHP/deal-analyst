@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta http-equiv="Cache-Control" content="no-cache"><meta name="da-build" content="2026-10-11c">
+<meta http-equiv="Cache-Control" content="no-cache"><meta name="da-build" content="2026-10-11d">
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>TPHP — Deal Evaluation</title>
@@ -2159,6 +2159,11 @@ function disCalcExtras(rows){
      if(b in AVM&&r[2]!==''&&r[2]!=null&&!isNaN(+r[2])&&+r[2]>0){const rowNo=rows.indexOf(r)+1;
        out.push(AVM[b]?{label:r[1].trim()+' AVM',value:String(Math.round(+r[2])),key:AVM[b],note:'DIS form Calc. 2.5 C'+rowNo}
                       :{label:r[1].trim()+' estimate',value:'$'+Math.round(+r[2]).toLocaleString(),key:null})}}
+    {const MV={'active listings (area)':'activeListings','pending last 30 days':'pendingLast30','closed last 30 days':'closedLast30','months of supply':'monthsOfSupply','avg dom (area)':'avgDOM'};
+     for(let ci=0;ci<r.length-1;ci++){const lb=DIS_NORM(r[ci]);
+       if(MV[lb]&&r[ci+1]!==''&&r[ci+1]!=null&&!isNaN(+r[ci+1])){const v=+r[ci+1];out.push({label:'Market Velocity · '+String(r[ci]).trim(),value:String(MV[lb]==='monthsOfSupply'?Math.round(v*10)/10:Math.round(v)),key:'mkt:'+MV[lb],note:'DIS form Calc. 2.5'+(r[ci+2]?' · '+disCell(r[ci+2]):'')})}
+       if(lb==='market velocity period'&&r[ci+1])out.push({label:'Market Velocity period',value:disCell(r[ci+1]),key:'mkt:velocityPeriod',note:'DIS form'});
+       if(lb==='market velocity source'&&r[ci+1])out.push({label:'Market Velocity source',value:disCell(r[ci+1]),key:'mkt:velocitySource',note:'DIS form'});}}
     if(b==='comp'&&DIS_NORM(r[2])==='address'){hdr=r.map(DIS_NORM);compHdr=hdr}
     // Comp rows under the Calculator #1 header: B = 1..n, C address, I sqft, J price, L date, N DOM, O yr, P bed, Q bath, R link, S list price
     if(compHdr&&/^\d+$/.test(String(r[1]).trim())){
@@ -2295,9 +2300,10 @@ function disBuildProposal({items,extras},fdif,qo={}){
   }
   const QO_LBL={zillowAVM:'Quick Offer · Zillow AVM',realtorAVM:'Quick Offer · Realtor.com AVM',redfinAVM:'Quick Offer · Redfin AVM',houseCanaryAVM:'Quick Offer · House Canary AVM',cmaAVM:'Quick Offer · CMA (MLS) AVM'};
   const LINK_LBL={zillowUrl:'Zillow Listing URL (optional override)',redfinUrl:'Redfin link (Open Redfin button)',realtorUrl:'Realtor.com link (Open Realtor.com button)'};
-  const labelOf=k=>{if(k.startsWith('qo:'))return QO_LBL[k.slice(3)]||k;if(LINK_LBL[k]&&k!=='zillowUrl')return LINK_LBL[k];for(const s of FDIF_SECTIONS)for(const f of s.fields)if(f.k===k)return f.l;return k};
+  const MKT_LBL={activeListings:'Market Velocity · Active Listings (Area)',pendingLast30:'Market Velocity · Pending Last 30 Days',closedLast30:'Market Velocity · Closed Last 30 Days',monthsOfSupply:'Market Velocity · Months of Supply',avgDOM:'Market Velocity · Avg DOM (Area)',velocityPeriod:'Market Velocity · period',velocitySource:'Market Velocity · source'};
+  const labelOf=k=>{if(k.startsWith('mkt:'))return MKT_LBL[k.slice(4)]||k;if(k.startsWith('qo:'))return QO_LBL[k.slice(3)]||k;if(LINK_LBL[k]&&k!=='zillowUrl')return LINK_LBL[k];for(const s of FDIF_SECTIONS)for(const f of s.fields)if(f.k===k)return f.l;return k};
   const fields=Object.entries(out).map(([key,proposed])=>{
-    const current=String((key.startsWith('qo:')?qo[key.slice(3)]:fdif[key])||'').trim();
+    const current=String((key.startsWith('mkt:')?(fdif.__market||{})[key.slice(4)]:key.startsWith('qo:')?qo[key.slice(3)]:fdif[key])||'').trim();
     return{key,label:labelOf(key),current,proposed,keep:!!current&&current!==proposed,same:current===proposed,note:notes[key]};
   });
   if(compField){compField.keep=!!compField.current;compField.same=false;fields.push(compField)}
@@ -2464,7 +2470,7 @@ function TabFDIF({D}){
     try{
       const parsed=await disReadFile(file);
       if(!parsed.items.length&&!parsed.extras.length){alert('No DIS form fields were found in '+file.name+'. Download the intake form from Drive as Microsoft Excel (.xlsx) and try again.');return}
-      const prop=disBuildProposal(parsed,{...D.deal.fdif,__comps:D.deal.comps},D.deal.quickOffer||{});
+      const prop=disBuildProposal(parsed,{...D.deal.fdif,__comps:D.deal.comps,__market:D.deal.market||{}},D.deal.quickOffer||{});
       const addr=(prop.fields.find(f=>f.key==='address')||{}).proposed||D.deal.fdif.address;
       const owner=(prop.fields.find(f=>f.key==='contactName')||{}).proposed||D.deal.fdif.contactName;
       const others=[...(D.deals||[]).filter(d=>d.id!==D.deal.id).map(d=>d.fdif&&d.fdif.marketArea),...Object.keys(D.marketRates||{}).filter(k=>k!=='__default')];
@@ -2499,6 +2505,7 @@ function TabFDIF({D}){
       if(f.keep){kept.push(f.label);continue}
       if(f.isComps){const list=f.comps.map(c=>({...blankComp(),...c}));while(list.length<3)list.push(blankComp());
         C().asIs=list;filled.push(f.label+' ('+f.comps.length+')');continue}
+      if(f.key.startsWith('mkt:')){D.updateMkt(f.key.slice(4),f.proposed);filled.push(f.label);continue}
       if(f.key.startsWith('qo:'))D.updateQO(f.key.slice(3),f.proposed);else D.updateFDIF(f.key,f.proposed);filled.push(f.label);
     }
     if(comps)D.updateDeal({comps});
@@ -4251,7 +4258,7 @@ function TabFullDeal({D}){
 
     <div className="card mb4"><div className="card-h">Market Velocity</div><div className="card-b"><div className="grid2">
       {[['activeListings','Active Listings (Area)'],['pendingLast30','Pending Last 30 Days'],['closedLast30','Closed Last 30 Days'],['monthsOfSupply','Months of Supply'],['avgDOM','Avg DOM (Area)']].map(([k,l])=><div key={k} className="fg"><label>{l}</label><input className="inp inp-m" type="number" value={market[k]||''} onChange={e=>D.updateMkt(k,e.target.value)}/></div>)}
-    </div></div></div>
+    </div>{(market.velocityPeriod||market.velocitySource)&&<div className="tmut" style={{fontSize:'.72rem',marginTop:6}}>County data{market.velocityPeriod?' · '+market.velocityPeriod:''}{market.velocitySource?' · '+market.velocitySource:''}</div>}</div></div>
 
     <RenoScope D={D} renoScope={renoScope} renoNotes={renoNotes} rc={rc} fr={fr} sqft={sqft} renoPSF={D.deal.renoPSF} qfRenoPSF={D.deal.qfRenoPSF}/>
 
