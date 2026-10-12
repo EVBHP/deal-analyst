@@ -2181,7 +2181,7 @@ function disCalcExtras(rows){
   }
   if(comps.length||skippedComps.length){
     const seen=new Set(),uniq=comps.filter(c=>{const k=c.address.toLowerCase().replace(/[^a-z0-9]/g,'');if(seen.has(k))return false;seen.add(k);return true});
-    out.push({label:'ARV comps',key:'comps:renovated',value:uniq,skipped:skippedComps});
+    out.push({label:'As-Is comps',key:'comps:asIs',value:uniq,skipped:skippedComps});
   }
   return out;
 }
@@ -2259,9 +2259,9 @@ function disBuildProposal({items,extras},fdif,qo={}){
   if(beds||baths)acc.bedsBaths=[{lbl:'',text:(beds||'?')+'/'+(baths||'?')}];
   let compField=null;
   for(const ex of extras){
-    if(ex.key==='comps:renovated'){
-      const cur=((fdif.__comps&&fdif.__comps.renovated)||[]).filter(c=>c.address||c.price);
-      if(ex.value.length)compField={key:'comps:renovated',label:'Full Deal Eval · Renovated (ARV) comps',isComps:true,comps:ex.value,
+    if(ex.key==='comps:asIs'){
+      const cur=((fdif.__comps&&fdif.__comps.asIs)||[]).filter(c=>c.address||c.price);
+      if(ex.value.length)compField={key:'comps:asIs',label:'Full Deal Eval · As-Is comps',isComps:true,comps:ex.value,
         current:cur.length?cur.length+' comp'+(cur.length>1?'s':'')+': '+cur.map(c=>c.address||'(no address)').join('; '):'',
         proposed:ex.value.length+' comp'+(ex.value.length>1?'s':'')+':\n'+ex.value.map(c=>'• '+c.address+' — '+fmt(pn(c.price))+(c.sqft?', '+c.sqft+' sf':'')+(c.saleDate?', sold '+c.saleDate:'')).join('\n'),
         note:'DIS form Calc. 2.5 Calculator #1 rows 42+'+(ex.skipped.length?' · skipped '+ex.skipped.join(', '):'')};
@@ -2481,7 +2481,7 @@ function TabFDIF({D}){
       if(f.same)continue;
       if(f.keep){kept.push(f.label);continue}
       if(f.isComps){const list=f.comps.map(c=>({...blankComp(),...c}));while(list.length<3)list.push(blankComp());
-        D.updateDeal({comps:{...D.deal.comps,renovated:list}});filled.push(f.label+' ('+f.comps.length+')');continue}
+        D.updateDeal({comps:{...D.deal.comps,asIs:list}});filled.push(f.label+' ('+f.comps.length+')');continue}
       if(f.key.startsWith('qo:'))D.updateQO(f.key.slice(3),f.proposed);else D.updateFDIF(f.key,f.proposed);filled.push(f.label);
     }
     D.updateFDIF('disImportedFrom',disImport.fileName);D.updateFDIF('disImportedAt',new Date().toISOString());
