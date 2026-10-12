@@ -2148,7 +2148,7 @@ function disRowsToItems(rows){
 
 // Calc. 2.5 tab extras: SP SQFT, AVM sources, subject sale row (row with 'SP' in col B under the comps header)
 function disCalcExtras(rows){
-  const out=[];let hdr=null;
+  const out=[];let hdr=null,compHdr=null;const comps=[],skippedComps=[];
   for(const r of rows){
     const b=DIS_NORM(r[1]);
     if(b==='sp sqft'&&r[2]!=null&&r[2]!=='')out.push({label:'SP SQFT',value:disCell(r[2]),key:'sqft'});
@@ -2158,13 +2158,30 @@ function disCalcExtras(rows){
      if(b in AVM&&r[2]!==''&&r[2]!=null&&!isNaN(+r[2])&&+r[2]>0){const rowNo=rows.indexOf(r)+1;
        out.push(AVM[b]?{label:r[1].trim()+' AVM',value:String(Math.round(+r[2])),key:AVM[b],note:'DIS form Calc. 2.5 C'+rowNo}
                       :{label:r[1].trim()+' estimate',value:'$'+Math.round(+r[2]).toLocaleString(),key:null})}}
-    if(b==='comp'&&DIS_NORM(r[2])==='address')hdr=r.map(DIS_NORM);
+    if(b==='comp'&&DIS_NORM(r[2])==='address'){hdr=r.map(DIS_NORM);compHdr=hdr}
+    // Comp rows under the Calculator #1 header: B = 1..n, C address, I sqft, J price, L date, N DOM, O yr, P bed, Q bath, R link
+    if(compHdr&&/^\d+$/.test(String(r[1]).trim())){
+      const g=n=>{const i=compHdr.indexOf(n);return i<0?'':disCell(r[i])};
+      const addr=disCell(r[2]),price=pn(g('sold price'));
+      if(addr&&/^(test|sample|example)\b/i.test(addr))skippedComps.push('row '+(rows.indexOf(r)+1)+' ('+addr+', sample)');
+      else if(addr&&price>0){
+        const bed=g('bed'),bath=g('bath');
+        comps.push({address:addr,sqft:g('sqft')?String(Math.round(pn(g('sqft')))):'',price:String(Math.round(price)),
+          saleDate:g('sold date'),dom:g('days on mkt')?String(Math.round(pn(g('days on mkt')))):'',yearBuilt:g('yr built')?String(parseInt(g('yr built'))):'',
+          bedBath:bed||bath?(bed||'?')+'/'+(bath||'?'):'',status:'Closed',notes:(r[17]?'Source: '+disCell(r[17]):'')+' [DIS form row '+(rows.indexOf(r)+1)+']'});
+      }
+    }
+    if(compHdr&&/avg of comps/i.test(String(r[6]||'')))compHdr=null;
     if(hdr&&b==='sp'){
       const g=n=>{const i=hdr.indexOf(n);return i<0?'':disCell(r[i])};
       if(g('yr built'))out.push({label:'Yr Built (subject)',value:String(parseInt(g('yr built'))),key:'yearBuilt'});
       if(g('sold price'))out.push({label:'Last sale',value:'$'+Math.round(+g('sold price')).toLocaleString()+(g('sold date')?' on '+g('sold date'):''),key:null});
       hdr=null;
     }
+  }
+  if(comps.length||skippedComps.length){
+    const seen=new Set(),uniq=comps.filter(c=>{const k=c.address.toLowerCase().replace(/[^a-z0-9]/g,'');if(seen.has(k))return false;seen.add(k);return true});
+    out.push({label:'ARV comps',key:'comps:renovated',value:uniq,skipped:skippedComps});
   }
   return out;
 }
@@ -2240,7 +2257,16 @@ function disBuildProposal({items,extras},fdif,qo={}){
     add(key,lbl,text,it.label);
   }
   if(beds||baths)acc.bedsBaths=[{lbl:'',text:(beds||'?')+'/'+(baths||'?')}];
+  let compField=null;
   for(const ex of extras){
+    if(ex.key==='comps:renovated'){
+      const cur=((fdif.__comps&&fdif.__comps.renovated)||[]).filter(c=>c.address||c.price);
+      if(ex.value.length)compField={key:'comps:renovated',label:'Full Deal Eval · Renovated (ARV) comps',isComps:true,comps:ex.value,
+        current:cur.length?cur.length+' comp'+(cur.length>1?'s':'')+': '+cur.map(c=>c.address||'(no address)').join('; '):'',
+        proposed:ex.value.length+' comp'+(ex.value.length>1?'s':'')+':\n'+ex.value.map(c=>'• '+c.address+' — '+fmt(pn(c.price))+(c.sqft?', '+c.sqft+' sf':'')+(c.saleDate?', sold '+c.saleDate:'')).join('\n'),
+        note:'DIS form Calc. 2.5 Calculator #1 rows 42+'+(ex.skipped.length?' · skipped '+ex.skipped.join(', '):'')};
+      continue;
+    }
     if(ex.key){acc[ex.key]=[{lbl:'',text:ex.value}];matched.push({src:ex.label,key:ex.key});if(ex.note)(acc.__notes=acc.__notes||{})[ex.key]=ex.note}
     else unmatched.push({label:ex.label,text:ex.value});
   }
@@ -2262,6 +2288,7 @@ function disBuildProposal({items,extras},fdif,qo={}){
     const current=String((key.startsWith('qo:')?qo[key.slice(3)]:fdif[key])||'').trim();
     return{key,label:labelOf(key),current,proposed,keep:!!current&&current!==proposed,same:current===proposed,note:notes[key]};
   });
+  if(compField){compField.keep=!!compField.current;compField.same=false;fields.push(compField)}
   return{fields,unmatched,matchedCount:matched.length};
 }
 // "0.25 ac (10,890 sq ft)". Accepts acres or square feet (values > 200 are taken as sq ft).
@@ -2424,7 +2451,7 @@ function TabFDIF({D}){
     try{
       const parsed=await disReadFile(file);
       if(!parsed.items.length&&!parsed.extras.length){alert('No DIS form fields were found in '+file.name+'. Download the intake form from Drive as Microsoft Excel (.xlsx) and try again.');return}
-      const prop=disBuildProposal(parsed,D.deal.fdif,D.deal.quickOffer||{});
+      const prop=disBuildProposal(parsed,{...D.deal.fdif,__comps:D.deal.comps},D.deal.quickOffer||{});
       const addr=(prop.fields.find(f=>f.key==='address')||{}).proposed||D.deal.fdif.address;
       const owner=(prop.fields.find(f=>f.key==='contactName')||{}).proposed||D.deal.fdif.contactName;
       const others=[...(D.deals||[]).filter(d=>d.id!==D.deal.id).map(d=>d.fdif&&d.fdif.marketArea),...Object.keys(D.marketRates||{}).filter(k=>k!=='__default')];
@@ -2453,6 +2480,8 @@ function TabFDIF({D}){
     for(const f of disImport.fields){
       if(f.same)continue;
       if(f.keep){kept.push(f.label);continue}
+      if(f.isComps){const list=f.comps.map(c=>({...blankComp(),...c}));while(list.length<3)list.push(blankComp());
+        D.updateDeal({comps:{...D.deal.comps,renovated:list}});filled.push(f.label+' ('+f.comps.length+')');continue}
       if(f.key.startsWith('qo:'))D.updateQO(f.key.slice(3),f.proposed);else D.updateFDIF(f.key,f.proposed);filled.push(f.label);
     }
     D.updateFDIF('disImportedFrom',disImport.fileName);D.updateFDIF('disImportedAt',new Date().toISOString());
